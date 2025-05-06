@@ -1,0 +1,201 @@
+// Throughput (Radeon 780M): 14.4G/s (4.8G/s for n % p)
+uint modp_float(int64_t n, uint p, float pinv) {
+  for (int _ = 0; _ < 2; _++) {
+    float q = float(n) * pinv;
+    int e;
+    frexp(q, e);
+    int shift = max(0, e - 24);
+    int qm = int(round(ldexp(q, -shift)));
+    if (qm == 0)
+      return n < 0 ? uint(n) + p : uint(n);
+    n -= (int64_t(qm) * int64_t(p)) << shift;
+  }
+  int n32 = int(n);
+  for (int _ = 0; _ < 2; _++) {
+    float q = float(n32) * pinv;
+    int qm = int(round(q));
+    if (qm == 0)
+      return n32 < 0 ? uint(n32) + p : uint(n32);
+    n32 -= qm * int(p);
+  }
+  // unreachable
+  return -1;
+}
+
+// Throughput (Radeon 780M): 7.4G/s
+uint modp_float(uvec3 big, uint p, float pinv) {
+  int64_t n = int64_t((uint64_t(big.z) << 32) | big.y);
+  [[unroll]]
+  for (int _ = 0; _ < 2; _++) {
+    float q = float(n) * pinv;
+    // q = qm * 2^shift where qm is int32
+    int e;
+    frexp(q, e);
+    int shift = max(0, e - 24);
+    int qm = int(round(ldexp(q, -shift)));
+    if (qm == 0)
+      break;
+    n -= (int64_t(qm) * int64_t(p)) << shift;
+  }
+  // Now n is small (32 bits)
+  n = (n << 32) + big.x;
+  return modp_float(n, p, pinv);
+}
+
+#ifdef BLEN
+uint modp_float(uint bign[BLEN], uint p, float pinv) {
+  uint l = bign.length();
+  int64_t n = int(bign[l - 1]); // preserve sign
+  for (int i = int(l) - 2; i >= 0; i--) {
+    n = (n << 32) | bign[i];
+    [[unroll]]
+    for (int _ = 0; _ < 2; _++) {
+      float q = float(n) * pinv;
+      // q = qm * 2^shift where qm is int32
+      int e;
+      frexp(q, e);
+      int shift = max(0, e - 24);
+      int qm = int(round(ldexp(q, -shift)));
+      if (qm == 0)
+        break;
+      n -= (int64_t(qm) * int64_t(p)) << shift;
+    }
+    // Now n is small (32 bits)
+  }
+  return modp_float(int(n), p, pinv);
+}
+#endif
+
+// Assumes that n is 31 bits.
+// Throughput (Radeon 780M): 73G/s (59G/s for n % p)
+uint modp_float(int n, uint p, float pinv) {
+  for (int _ = 0; _ < 2; _++) {
+    float q = float(n) * pinv;
+    int qm = int(round(q));
+    if (qm == 0)
+      break;
+    n -= qm * int(p);
+  }
+  if (n < 0)
+    n += int(p);
+  return uint(n);
+}
+
+// Assumes that p is 24 bits (only 1 reduction is needed).
+uint mulmod(int a, int b, uint p, float pinv) {
+  int64_t x = int64_t(a) * int64_t(b);
+  float q = float(x) * pinv;
+  x -= int64_t(int(round(q))) * int64_t(p);
+
+  int x32 = int(x);
+  if (abs(x32) >= int(p)) {
+    // Rare case, may happen if p >= 2^22
+    float q = float(x32) * pinv;
+    x32 -= int(round(q)) * int(p);
+  }
+  if (x32 < 0)
+    x32 += int(p);
+  if (x32 >= p)
+    x32 -= int(p);
+  return uint(x32);
+}
+
+// Compute big % p for unsigned big
+// Throughput (Radeon 780M): 1.9G/s
+uint modp_bits(uvec3 big, uint p) {
+  uint64_t n = (uint64_t(big.z) << 32) | big.y;
+  uint logp = findMSB(p);
+  while (n >> 32 != 0) {
+    uint shift = uint(findMSB(n)) - logp;
+    if (shift > 0)
+      shift--;
+    n -= uint64_t(p) << shift;
+  }
+  uint n32 = uint(n);
+  while (n32 >= p) {
+    uint shift = findMSB(n32) - logp;
+    if (shift > 0)
+      shift--;
+    n32 -= p << shift;
+  }
+  n = (uint64_t(n32) << 32) | big.x;
+  while (n >> 32 != 0) {
+    uint shift = uint(findMSB(n)) - logp;
+    if (shift > 0)
+      shift--;
+    n -= uint64_t(p) << shift;
+  }
+  n32 = uint(n);
+  while (n32 >= p) {
+    uint shift = findMSB(n32) - logp;
+    if (shift > 0)
+      shift--;
+    n32 -= p << shift;
+  }
+  return n32;
+}
+
+// Compute big % p for signed big where m24 is 2^24 % p
+// Throughput (Radeon 780M): 1.4G/s
+uint modp_horner(uvec3 big, uint p, uint m24) {
+  ivec4 b = ivec4(big.x & 0xffffff, (big.x >> 24) | ((big.y & 0xffff) << 8),
+                  (big.y >> 16) | ((big.z & 0xff) << 16), int(big.z) >> 8);
+  int64_t r = int64_t(b.w) * int64_t(m24) + int64_t(b.z);
+  r = int64_t(r % p) * int64_t(m24) + int64_t(b.y);
+  r = int64_t(r % p) * int64_t(m24) + int64_t(b.x);
+  r = r % p;
+  if (r < 0)
+    r += p;
+  return uint(r);
+}
+
+// Compute modular inverse of x mod p, assuming that x is less than 30 bits.
+// Throughput (Radeon 780M): 1800M/s
+int invmod(int x, int p) {
+  if (p == 2)
+    return x & 1;
+  if (x == 0)
+    return 0;
+
+  // Invariants:
+  // u > 0 and v > 0, r >= 0, s >= 0
+  // rx = u, sx = v modulo p
+  int u = p;
+  int v = x;
+  int r = 0;
+  int s = 1;
+
+  int vtz = findLSB(x);
+  v >>= vtz;
+  for (int i = 0; i < vtz; i++) {
+    s = ((s & 1) == 0) ? s >> 1 : (s + p) >> 1;
+  }
+  // Invariant: u and v are odd.
+  if (v == 1)
+    return s;
+  for (int _ = 1; _ < 33; _++) {
+    int diff = u - v;
+    int d = abs(diff);
+    int t = diff > 0 ? r - s : s - r;
+    if (t < 0) {
+      t += p;
+    }
+    // tx = d modulo p
+    int dtz = findLSB(d);
+    d >>= dtz;
+    // t = (t / 2^dtz) % p
+    for (int i = 0; i < dtz; i++) {
+      t = ((t & 1) == 0) ? t >> 1 : (t + p) >> 1;
+    }
+    if (d == 1)
+      return t;
+    if (diff > 0) {
+      u = d;
+      r = t;
+    } else {
+      v = d;
+      s = t;
+    }
+  }
+  return -1;
+}

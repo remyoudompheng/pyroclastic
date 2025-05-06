@@ -1,0 +1,102 @@
+// Computation of roots for SIQS
+//
+// Inputs:
+// - a factor base (array of u32 primes)
+// - square roots of N (array of u32)
+// - A (big integer stored as array of uint)
+// - Bi (array of uvec3 big integers, with sign bit)
+//
+// Output:
+// - list of sqrt(N)/4A list of polynomial roots (array of uvec2) for each D
+// - list of Bi/4A for each Bi
+//
+// For performance, we precompute partial sums:
+// - 2^4 combinations B0 ± B1 ... ± B4
+// - 2^4 combinations B5 ± ... ± B8
+// - 2^(AFACS-9) combinations B9 ± ... ± Bk
+//
+// Arithmetic assumes that primes fit in 24 bits (factor base of ~500k primes)
+
+#version 450
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+
+#if AFACS < 5
+#error AFACS < 5
+#endif
+
+layout(binding = 0) readonly buffer Primes { uint primes[]; };
+layout(binding = 1) readonly buffer NRoots { uint nroots[]; };
+layout(binding = 2) buffer PRoots { int proots[]; };
+layout(binding = 3) readonly buffer B { uint[BLEN] b[AFACS]; };
+layout(binding = 4) readonly buffer Args { uint a[BLEN]; };
+
+#include <arith.comp>
+#define modp modp_float
+
+void main() {
+  const uint i = gl_GlobalInvocationID.x;
+  if (i >= primes.length())
+    return;
+  const uint p = primes[i];
+  const uint r = nroots[i];
+  const float pinv = 1.0 / float(p);
+
+  // The result will be incorrect for p=2 and p dividing A
+
+  // Compute 1/4A mod p
+  uint ap = modp(a, p, pinv);
+  int ainv = invmod(int(ap), int(p));
+  ainv = ((ainv & 1) == 0) ? ainv >> 1 : (ainv + int(p)) >> 1;
+
+  uint ra = mulmod(int(r), ainv, p, pinv);
+  // If p divides A (ainv==0), set root to 2^31 to exclude it.
+  proots[i] = ainv == 0 ? -1 : int(ra);
+  int ba[AFACS];
+  for (int j = 0; j < AFACS; j++) {
+    uint bp = modp(b[j], p, pinv);
+    ba[j] = int(mulmod(int(bp), ainv, p, pinv));
+  }
+  uint idx = i;
+  [[unroll]]
+  for (uint j = 0; j < 16; j++) {
+    idx += primes.length();
+    proots[idx] = ba[0] + (((j & 1) == 0) ? ba[1] : -ba[1]) +
+                  (((j & 2) == 0) ? ba[2] : -ba[2]) +
+                  (((j & 4) == 0) ? ba[3] : -ba[3]) +
+                  (((j & 8) == 0) ? ba[4] : -ba[4]);
+  }
+#if AFACS > 9
+  [[unroll]]
+  for (uint j = 0; j < 16; j++) {
+    idx += primes.length();
+    proots[idx] =
+        (((j & 1) == 0) ? ba[5] : -ba[5]) + (((j & 2) == 0) ? ba[6] : -ba[6]) +
+        (((j & 4) == 0) ? ba[7] : -ba[7]) + (((j & 8) == 0) ? ba[8] : -ba[8]);
+  }
+  [[unroll]]
+  for (uint j = 0; j < (1 << (AFACS - 9)); j++) {
+    idx += primes.length();
+    int pr = 0;
+    [[unroll]]
+    for (uint k = 0; k < AFACS - 9; k++) {
+      pr += (((j >> k) & 1) == 0) ? ba[9 + k] : -ba[9 + k];
+    }
+    proots[idx] = pr;
+  }
+#else
+  [[unroll]]
+  for (uint j = 0; j < (1 << (AFACS - 5)); j++) {
+    idx += primes.length();
+    int pr = 0;
+    [[unroll]]
+    for (uint k = 0; k < AFACS - 5; k++) {
+      pr += (((j >> k) & 1) == 0) ? ba[5 + k] : -ba[5 + k];
+    }
+    proots[idx] = pr;
+  }
+#endif
+}

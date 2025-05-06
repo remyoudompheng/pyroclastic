@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyroclastic"
+version = "0.1"
+authors = [ { name="Rémy O", email="remyoudompheng@gmail.com" } ]
+description = "Computation of quadratic class groups"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+
+dependencies = [
+  "python-flint>=0.7",
+  "kp==0.9.0",
+  "tqdm>=4.0",
+  "networkx>=3.2"
+]
+
+[tool.setuptools.package-data]
+pyroclastic = ["*.comp"]
+

@@ -1,0 +1,357 @@
+// SIQS core loop
+//
+// Each workgroup handles an interval of ITERS segment (each 16k)
+// for POLYS_PER_WG polynomials.
+//
+// Each segment element is a 8-bit accumulator
+//
+// Small primes are smaller than 65536 and use 16-bit offsets.
+// Huge primes store offsets in "buckets" per subsegment
+// as a packed 16-bit data structure.
+
+#version 450
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+
+// Enumeration of prime base and roots
+layout(binding = 0) readonly buffer Primes { uint primes[]; };
+// Array of length AFACS * len(primes)
+layout(binding = 1) buffer PRoots { int proots[]; };
+// An array of size gl_NumWorkGroups * ITERS * BUCKET_SIZE
+// containing offsets for huge primes sorted by segment.
+// A bucket will contain SEGMENT_SIZE * sum(1/p) elements.
+//
+// Each 16-bit offset is 13-bit offset inside a size 8192 interval + 3-bit logp.
+layout(binding = 2) coherent buffer HugeOffsets { uint16_t hugeoffs[]; };
+// Each polynomial output results to index (OUTSTRIDE * poly_idx + i)
+layout(binding = 3) coherent buffer Output { int outs[]; };
+layout(binding = 4) coherent buffer OutFacs { uint facs[]; };
+#if DEBUG
+layout(binding = 5) coherent buffer Debug { uint debugbuf[]; };
+#endif
+
+#include <arith.comp>
+
+#ifndef SEGMENT_SIZE
+#error missing SEGMENT_SIZE
+#endif
+
+#ifndef ITERS
+#error missing ITERS
+#endif
+
+#ifndef OUTSTRIDE
+#error missing OUTSTRIDE
+#endif
+
+#define SIEVE_TINY 0
+
+// Bit vector, where bit i is set if i is composite.
+shared uint segment[SEGMENT_SIZE / 4];
+
+// Size classes of primes.
+
+// Tiny primes: entire workgroup on a single prime+root
+const uint N_TINY = 8;
+// Small primes: processed by batches of 4
+const uint N_SMALL = 32;
+// Medium primes: processed by batches of 16
+const uint N_MED = 128;
+
+// Always a multiple of 512
+const uint N_LARGE = HUGE_PRIME - (N_TINY + N_SMALL + N_MED) / 2;
+
+// Huge primes are always more than 2^14
+const uint HUGE_LOG_OFFSET = 14;
+
+shared uint16_t tmpoffsets[N_TINY + N_SMALL + N_MED];
+shared uint16_t newoffsets[N_TINY + N_SMALL + N_MED];
+
+// Actually uint16
+shared uint huge_bucklen[ITERS * SEGMENT_SIZE / SUBSEGMENT_SIZE / 2];
+
+shared uint results_len;
+
+const uint M = ITERS * SEGMENT_SIZE / 2;
+
+uvec2 start_offsets(uint poly_idx, uint pidx) {
+  const uint p = primes[pidx];
+  const float pinv = 1.0 / float(p);
+  int rp = int(proots[pidx]);
+  if (rp < 0)
+    return uvec2(-1, -1);
+  uint idx1 = bitfieldExtract(poly_idx, 0, 4);
+  uint idx2 = bitfieldExtract(poly_idx, 4, 4);
+  int bp = proots[pidx + primes.length() * (1 + idx1)];
+  bp += proots[pidx + primes.length() * (17 + idx2)];
+#if AFACS > 9
+  uint idx3 = bitfieldExtract(poly_idx, 8, AFACS - 9);
+  bp += proots[pidx + primes.length() * (33 + idx3)];
+#endif
+  // Compute M + (sqrt(N) - B) / 2A
+  bp = int(modp_float(int(M) - bp, p, pinv));
+
+  uvec2 res = uvec2(rp + bp, p - rp + bp);
+  if (res.x >= p)
+    res.x -= p;
+  if (res.y >= p)
+    res.y -= p;
+  return res;
+}
+
+void dopoly(uint poly_idx) {
+  const uint wg = poly_idx;
+  const uint hbase = (wg / POLYS_PER_WG) * BUCKET_SIZE * ITERS *
+                     (SEGMENT_SIZE / SUBSEGMENT_SIZE);
+  const uint tidx = gl_LocalInvocationID.x;
+  const uint resbase = OUTSTRIDE * wg;
+
+  // Initialize buffer
+  results_len = 0;
+  for (uint i = 0; i < segment.length(); i += gl_WorkGroupSize.x) {
+    segment[i + tidx] = 0;
+  }
+  for (uint i = tidx; i < huge_bucklen.length(); i += gl_WorkGroupSize.x) {
+    huge_bucklen[i] = 0;
+  }
+  // Small offsets
+  for (uint i = tidx; i < tmpoffsets.length() / 2; i += gl_WorkGroupSize.x) {
+    uvec2 offv = start_offsets(wg, i);
+    tmpoffsets[2 * i] = uint16_t(offv.x);
+    tmpoffsets[2 * i + 1] = uint16_t(offv.y);
+  }
+  // Large offsets
+  // They are stored in VGPR because register file is usually much larger than
+  // shared memory.
+  u16vec2 largeoffs[(N_LARGE + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x];
+  for (uint i = 0; i < N_LARGE; i += gl_WorkGroupSize.x) {
+    const uint pidx = tmpoffsets.length() / 2 + i + tidx;
+    if (pidx >= primes.length())
+      break;
+    uvec2 offv = start_offsets(wg, pidx);
+    largeoffs[i / gl_WorkGroupSize.x] = u16vec2(offv);
+  }
+
+  barrier();
+  memoryBarrierShared();
+  memoryBarrier();
+
+  // Run sieve
+  const uint PB = 2 * primes.length();
+  for (uint j = 0; j < ITERS; j++) {
+#if SIEVE_TINY
+    // Tiny primes are not very useful because they contribute very few
+    // bits and will cause a lot of bank conflicts.
+    // Entire workgroup sieves a single prime.
+    for (uint i = 0; i < min(PB, N_TINY); i++) {
+      uint p = primes[i / 2];
+      uint off = tmpoffsets[i];
+      if ((i & 1) == 1 && off == tmpoffsets[i - 1])
+        continue;
+      uint logp = findMSB(p);
+      off += tidx * p;
+      while (off < SEGMENT_SIZE) {
+        atomicAdd(segment[off / 4], logp << (8 * (off % 4)));
+        off += gl_WorkGroupSize.x * p;
+      }
+      off -= SEGMENT_SIZE;
+      // Only one is less than p
+      if (off < p)
+        newoffsets[i] = uint16_t(off);
+    }
+#endif
+
+    // Workgroup sieves 4 primes.
+    // Assumes that N_SMALL is a multiple of 4.
+    {
+      uint subwg = gl_WorkGroupSize.x / 4;
+      uint ii = tidx / subwg; // 0..3
+      uint jj = tidx % subwg;
+      for (uint i0 = 0; i0 < N_SMALL; i0 += 4) {
+        const uint i = N_TINY + i0 + ii;
+        if (i >= PB)
+          break;
+        uint p = primes[i / 2];
+        uint off = tmpoffsets[i];
+        if (off == -1 || ((i & 1) == 1 && off == tmpoffsets[i - 1]))
+          continue;
+        uint logp = findMSB(p);
+        off += jj * p;
+        while (off < SEGMENT_SIZE) {
+          atomicAdd(segment[off / 4], logp << (8 * (off % 4)));
+          off += subwg * p;
+        }
+        off -= SEGMENT_SIZE;
+        // Only one is less than p
+        if (off < p)
+          newoffsets[i] = uint16_t(off);
+      }
+    }
+
+    // Workgroup sieves 8 primes.
+    // Assumes that N_MED is a multiple of 8.
+    {
+      uint subwg = gl_WorkGroupSize.x / 16;
+      uint ii = tidx / subwg; // 0..7
+      uint jj = tidx % subwg;
+      for (uint i0 = 0; i0 < N_MED; i0 += 16) {
+        const uint i = N_TINY + N_SMALL + i0 + ii;
+        if (i >= PB)
+          break;
+        uint p = primes[i / 2];
+        uint off = tmpoffsets[i];
+        if (off == -1 || ((i & 1) == 1 && off == tmpoffsets[i - 1]))
+          continue;
+        uint logp = findMSB(p);
+        off += jj * p;
+        while (off < SEGMENT_SIZE) {
+          atomicAdd(segment[off / 4], logp << (8 * (off % 4)));
+          off += subwg * p;
+        }
+        off -= SEGMENT_SIZE;
+        // Only one is less than p
+        if (off < p)
+          newoffsets[i] = uint16_t(off);
+      }
+    }
+
+    const uint IDX_LARGE = (N_TINY + N_SMALL + N_MED) / 2;
+    for (uint i = 0; i < N_LARGE; i += gl_WorkGroupSize.x) {
+      const uint pidx = IDX_LARGE + i + tidx;
+      if (pidx >= primes.length())
+        break;
+      uint p = primes[pidx];
+      u16vec2 off = largeoffs[i / gl_WorkGroupSize.x];
+      if (off.x == uint16_t(-1))
+        continue;
+      uint logp = findMSB(p);
+      while (off.x < SEGMENT_SIZE) {
+        atomicAdd(segment[off.x / 4], logp << (8 * (off.x % 4)));
+        off.x += uint16_t(p);
+      }
+      off.x -= uint16_t(SEGMENT_SIZE);
+      if (off.y != off.x) {
+        while (off.y < SEGMENT_SIZE) {
+          atomicAdd(segment[off.y / 4], logp << (8 * (off.y % 4)));
+          off.y += uint16_t(p);
+        }
+        off.y -= uint16_t(SEGMENT_SIZE);
+      }
+      largeoffs[i / gl_WorkGroupSize.x] = off;
+    }
+
+    barrier();
+    memoryBarrierShared();
+
+    for (uint i = tidx; i < newoffsets.length(); i += gl_WorkGroupSize.x) {
+      tmpoffsets[i] = newoffsets[i];
+    }
+
+    // Huge primes: use precomputed offsets
+    if (j == 0) {
+      for (uint i = HUGE_PRIME + tidx; i < primes.length();
+           i += gl_WorkGroupSize.x) {
+        uint p = primes[i];
+        uint logp = findMSB(p);
+        uvec2 offv = start_offsets(wg, i);
+        [[unroll]]
+        for (int _r = 0; _r < 2; _r++) {
+          if (offv.x == -1)
+            break;
+          if (_r == 1 && offv.x == offv.y)
+            break;
+          uint off = offv[_r];
+          // Fill first segment
+          while (off < SEGMENT_SIZE) {
+            atomicAdd(segment[off / 4], logp << (8 * (off % 4)));
+            off += p;
+          }
+          // Collect all offsets for all iters
+          while (off < ITERS * SEGMENT_SIZE) {
+            uint segidx = off / SUBSEGMENT_SIZE;
+            uint buckshift = 16 * (segidx & 1);
+            uint hidx = atomicAdd(huge_bucklen[segidx / 2], 1 << buckshift);
+            hidx = (hidx >> buckshift) & 0xffff;
+            uint hlog = min(logp, HUGE_LOG_OFFSET + 7) - HUGE_LOG_OFFSET;
+            hugeoffs[hbase + segidx * BUCKET_SIZE + hidx] =
+                uint16_t((logp - HUGE_LOG_OFFSET) * SUBSEGMENT_SIZE +
+                         (off % SUBSEGMENT_SIZE));
+            off += p;
+          }
+        }
+      }
+    } else {
+      const uint BUCKETS = SEGMENT_SIZE / SUBSEGMENT_SIZE;
+      const uint ti = tidx % (gl_WorkGroupSize.x / BUCKETS);
+      const uint tj = tidx / (gl_WorkGroupSize.x / BUCKETS); // 0..BUCKETS
+      const uint bidx = j * BUCKETS + tj;
+      uint huge_start = hbase + bidx * BUCKET_SIZE;
+      uint huge_count = unpack16(huge_bucklen[bidx / 2])[bidx & 1];
+      const uint subseg_start = tj * SUBSEGMENT_SIZE;
+      for (uint i = 0; i < huge_count; i += gl_WorkGroupSize.x / BUCKETS) {
+        if (i + ti < huge_count) {
+          uint off = hugeoffs[huge_start + i + ti];
+          uint logp = off / SUBSEGMENT_SIZE + HUGE_LOG_OFFSET;
+          off = subseg_start + off % SUBSEGMENT_SIZE;
+          atomicAdd(segment[off / 4], logp << (8 * (off % 4)));
+        }
+      }
+    }
+
+    barrier();
+    memoryBarrierShared();
+
+    // Count primes and zero buffer
+    for (uint i = 0; i < segment.length(); i += gl_WorkGroupSize.x) {
+      u8vec4 logs = unpack8(atomicExchange(segment[i + tidx], 0));
+#if DEBUG
+      debugbuf[poly_idx * (M / 2) + j * segment.length() + i + tidx] =
+          pack32(logs);
+#endif
+      for (uint ii = 0; ii < 4; ii++) {
+        if (logs[ii] > THRESHOLD) {
+          const uint x = j * SEGMENT_SIZE + 4 * (i + tidx) + ii;
+          const uint ridx = atomicAdd(results_len, 1);
+          if (ridx < OUTSTRIDE)
+            outs[resbase + ridx] = int(x) - int(M);
+        }
+      }
+    }
+
+    barrier();
+    memoryBarrierShared();
+    memoryBarrier();
+  }
+  // Compute factorization of results.
+  if (results_len == 0)
+    return;
+  for (uint i = tidx; i < primes.length(); i += gl_WorkGroupSize.x) {
+    // FIXME
+    const uint p = primes[i];
+    uvec2 rs = start_offsets(wg, i);
+    for (uint j = 0; j < results_len; j++) {
+      int rmodp = int(M + outs[resbase + j]) % int(p);
+      if (rmodp < 0)
+        rmodp += int(p);
+      if (rmodp == int(rs.x) || rmodp == int(rs.y)) {
+        const uint facidx = atomicAdd(segment[j], 1);
+        if (facidx < 32) {
+          // should be always true
+          facs[32 * (resbase + j) + facidx] = p;
+        }
+      }
+    }
+  }
+  memoryBarrier();
+}
+
+void main() {
+  [[unroll]]
+  for (uint i = 0; i < POLYS_PER_WG; i++)
+    dopoly(POLYS_PER_WG * gl_WorkGroupID.x + i);
+}
