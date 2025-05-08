@@ -1,0 +1,62 @@
+// Sparse Matrix vector multiplication
+// The memory representation of M (or submatrices of M) will be:
+// - a dense block of 30-50 columns with high density
+// - a CSR for coefficients +1 (an index may appear multiple times for larger
+// values)
+// - a CSR for coefficients -1
+
+#version 450
+
+#ifndef N
+#error Matrix dimension undefined
+#endif
+
+#ifndef DENSE_N
+#error Dense width undefined
+#endif
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+
+// Each thread handles a row.
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
+layout(binding = 1) readonly buffer SparsePlus { uint16_t plus[]; };
+layout(binding = 2) readonly buffer SparseMinus { uint16_t minus[]; };
+layout(binding = 3) readonly buffer IdxPlus { uint idxPlus[]; };
+layout(binding = 4) readonly buffer IdxMinus { uint idxMinus[]; };
+layout(binding = 5) readonly buffer Vin { uint vin[]; };
+layout(binding = 6) buffer Vout { uint vout[]; };
+layout(binding = 7) readonly buffer Moduli { uint moduli[]; };
+
+void main() {
+  uint p = moduli[0];
+  int pi = int(p);
+  uint row = gl_GlobalInvocationID.x;
+  int acc = 0;
+  // Dense block
+  uint dense_base = row * DENSE_N;
+  for (uint i = 0; i < DENSE_N; i++) {
+    acc += int(dense[dense_base + i]) * int(vin[i]);
+  }
+  acc = acc % pi;
+  // +1 coefficients
+  uint plus0 = idxPlus[row];
+  uint plus1 = idxPlus[row + 1];
+  for (uint i = plus0; i < plus1; i++) {
+    acc += int(vin[plus[i]]);
+    if (acc >= pi)
+      acc -= pi;
+  }
+  // -1 coefficients
+  uint minus0 = idxMinus[row];
+  uint minus1 = idxMinus[row + 1];
+  for (uint i = minus0; i < minus1; i++) {
+    acc -= int(vin[minus[i]]);
+    if (acc < 0)
+      acc += pi;
+  }
+  vout[row] = uint(acc);
+}
