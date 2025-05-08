@@ -1,4 +1,7 @@
 import logging
+import pathlib
+import time
+
 from networkx import Graph, connected_components
 
 
@@ -151,3 +154,229 @@ def prune2(rawrels: list, B1: int, pbase: int):
     )
 
     return pruned, len(rels) - len(cols) - pbase
+
+def _as_dicts(rels: list[list]) -> list[dict]:
+    dicts = []
+    for r in rels:
+        v = {}
+        for p in r:
+            k = abs(p)
+            v.setdefault(k, 0)
+            if p < 0:
+                v[k] -= 1
+            else:
+                v[k] += 1
+        dicts.append(v)
+    return dicts
+
+def step_filter(rels, datadir: pathlib.Path):
+    rels = _as_dicts(rels)
+
+    t0 = time.time()
+    D = 2**250
+    dense_limit = 100
+
+    stats = {}
+    for ridx, r in enumerate(rels):
+        for p in r:
+            stats.setdefault(p, set()).add(ridx)
+
+    def addstat(ridx, r):
+        for p in r:
+            stats.setdefault(p, set()).add(ridx)
+
+    def delstat(ridx, r):
+        for p in r:
+            stats[p].remove(ridx)
+            if not stats[p]:
+                stats.pop(p)
+
+    def pivot(piv, r, p):
+        assert abs(piv[p]) == 1
+        k = r[p] * piv[p]
+        out = {}
+        for l in r:
+            if l in piv:
+                e = r[l] - k * piv[l]
+                if e:
+                    out[l] = e
+            else:
+                out[l] = r[l]
+        for l in piv:
+            if l not in r:
+                out[l] = -k * piv[l]
+        assert p not in out
+        return out
+
+    excess = len(rels) - len(stats)
+    print(f"{len(stats)} primes appear in relations")
+    print(f"{excess} relations can be removed")
+
+    # prime p = product(l^e)
+    saved_pivots = []
+
+    Ds = [2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20]
+    Ds += [25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100]
+    t = time.time()
+    removed = 0
+    for d in Ds:
+        remaining = [_r for _r in rels if _r is not None]
+        avgw = sum(len(r) for r in remaining) / len(remaining)
+        avgw1 = sum(abs(e) for r in remaining for _, e in r.items()) / len(remaining)
+        maxe = max(abs(e) for r in remaining for _, e in r.items())
+        nc, nr = len(stats), len(remaining)
+        assert nr > nc
+        print(
+            f"Starting {d}-merge: {nc} columns {nr} rows excess={nr-nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={time.time() - t:.1f}s"
+        )
+
+        if d > nc // 3:
+            # Matrix is too small
+            break
+
+        # Modulo p^k we have probabikity 1/p of missing a generator
+        # for each excess relation
+        MIN_EXCESS = 64 + D.bit_length()
+        while True:
+            # d-merges
+            md = [k for k in stats if len(stats[k]) <= d]
+            if not md:
+                break
+            print(f"{len(md)} {d}-merges candidates {min(md)}..{max(md)}")
+            merged = 0
+            for p in md:
+                rs = stats.get(p)
+                if not rs or len(rs) > d:
+                    # prime already eliminated or weight has grown
+                    continue
+                # Pivot has fewest coefficients and pivot value is ±1
+                assert all(p in rels[ridx] for ridx in stats[p])
+                rs = sorted(rs, key=lambda ridx: (abs(rels[ridx][p]), len(rels[ridx])))
+                pividx = rs[0]
+                piv = rels[pividx]
+                if abs(piv[p]) > 1:
+                    print(f"skip pivoting on {p}")
+                    continue
+                for ridx in rs[1:]:
+                    rp = pivot(piv, rels[ridx], p)
+                    delstat(ridx, rels[ridx])
+                    addstat(ridx, rp)
+                    # If relation becomes empty, remove it
+                    rels[ridx] = rp if len(rp) > 0 else None
+                # Remove and save pivot
+                delstat(pividx, piv)
+                rels[pividx] = None
+                saved_pivots.append(
+                    (p, {l: e * -piv[p] for l, e in piv.items() if l != p})
+                )
+                removed += 1
+                assert p not in stats
+                # FIXME: print pivot
+                merged += 1
+
+            if not merged:
+                break
+            print(f"{merged} pivots done")
+
+        remaining = [_r for _r in rels if _r is not None]
+        nr, nc = len(remaining), len(stats)
+        avgw = sum(len(r) for r in remaining) / nr
+
+        def score_sparse(rel, stats):
+            return len(rel) + sum(1 for l in rel if len(stats[l]) < 2 * d)
+
+        stop = avgw > dense_limit
+        # Remove most annoying relations
+        excess = nr - nc
+        if stop:
+            break
+        if excess > MIN_EXCESS:
+            to_remove = (excess - MIN_EXCESS) // (len(Ds) // 2)
+            if d < 10:
+                # Still actively merging
+                to_remove = 0
+            if to_remove:
+                scores = []
+                for ridx, r in enumerate(rels):
+                    if r is None:
+                        continue
+                    scores.append((score_sparse(r, stats), ridx))
+                scores.sort()
+                worst = scores[-to_remove:]
+                print(
+                    f"Worst rows ({len(worst)}) have score {worst[0][0]:.3f}..{worst[-1][0]:.3f}"
+                )
+                for _, ridx in worst:
+                    # Not a pivot, no need to save.
+                    delstat(ridx, rels[ridx])
+                    rels[ridx] = None
+
+    # For the last step, we just want to minimize length.
+    if excess > MIN_EXCESS:
+        #scores = [(len(r), ridx) for ridx, r in enumerate(rels) if r is not None]
+        scores = [(sum(abs(e) for e in r.values()), ridx) for ridx, r in enumerate(rels) if r is not None]
+        scores.sort()
+        to_remove = excess - MIN_EXCESS
+        worst = scores[-to_remove:]
+        print(
+            f"Worst rows ({len(worst)}) have score {worst[0][0]:.3f}..{worst[-1][0]:.3f}"
+        )
+        for _, ridx in worst:
+            # Not a pivot, no need to save.
+            delstat(ridx, rels[ridx])
+            rels[ridx] = None
+
+    rels = [_r for _r in rels if _r is not None]
+    nr, nc = len(rels), len(stats)
+    avgw = sum(len(r) for r in rels) / len(rels)
+    avgw1 = sum(abs(e) for r in remaining for _, e in r.items()) / len(remaining)
+    maxe = max(abs(e) for r in rels for e in r.values())
+    dt = time.time() - t0
+    print(
+        f"Final: {nc} columns {nr} rows excess={nr-nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={dt:.1f}s"
+    )
+    if False:
+        # Dump result
+        with open(datadir / "relations.removed", "w") as w:
+            for p, rel in reversed(saved_pivots):
+                line = f"{p} = " + " ".join(f"{l}^{e}" for l, e in sorted(rel.items()))
+                w.write(line)
+                w.write("\n")
+            print(f"{len(saved_pivots)} removed relations written to", w.name)
+
+        seen = set()
+        with open(datadir / "relations.filtered", "w") as w:
+            for r in rels:
+                line = " ".join(f"{l}^{e}" for l, e in sorted(r.items()))
+                if line in seen:
+                    print("WARNING: duplicate relation after filtering")
+                    continue
+                seen.add(line)
+                w.write(line)
+                w.write("\n")
+            print(f"{len(rels)} relations written to", w.name)
+
+    return rels
+
+
+def main():
+    import argparse
+    import os
+
+    p = argparse.ArgumentParser()
+    p.add_argument("DATADIR")
+    args = p.parse_args()
+
+    logging.getLogger().setLevel(logging.DEBUG)
+
+    with open(os.path.join(args.DATADIR, "relations.sieve")) as f:
+        rels = []
+        for l in f:
+            rels.append([int(x) for x in l.split()])
+        logging.info(f"Imported {len(rels)} relations")
+        pruned, _ = prune2(rels, 0, 0)
+
+        #for r in pruned:
+        #    print(r)
+
+        step_filter(pruned, pathlib.Path(args.DATADIR))

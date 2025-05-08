@@ -1,8 +1,5 @@
-import importlib
 import logging
-import os
 import random
-import subprocess
 import math
 import numpy as np
 
@@ -10,8 +7,9 @@ import kp
 from tqdm import trange
 
 from . import algebra
+from . import gpu
 from . import relations
-
+from . import linalg
 
 def random_relations(N: int, primes: list, size: int, dense: list):
     sum1p = sum(1.0 / p for p in primes)
@@ -52,57 +50,6 @@ def random_relations(N: int, primes: list, size: int, dense: list):
     return rels
 
 
-def rels_to_matrix(rels):
-    stats = {}
-    for r in rels:
-        for p in r:
-            if r[p]:
-                stats[p] = stats.get(p, 0) + 1
-    dense_p = []
-    for p, count in stats.items():
-        if count > len(rels) // 3:
-            dense_p.append(p)
-    dense_p.sort()
-    dense_p = dense_p[len(dense_p) % 4 :]
-    assert len(dense_p) % 4 == 0
-
-    dense_weight = sum(stats[p] for p in dense_p) / float(len(rels))
-    logging.info(f"Dense columns for {len(dense_p)} primes {dense_p}")
-    logging.info(f"Dense columns have average weight {dense_weight:.1f} per row")
-    max_weight1 = max(
-        sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
-    )
-    logging.info(f"Sparse columns have max weight {max_weight1} per row")
-
-    for r in rels:
-        for p in dense_p:
-            if p in r:
-                assert abs(r[p]) < 127
-
-    dense = np.zeros((len(rels), len(dense_p)), dtype=np.int8)
-    for i, r in enumerate(rels):
-        dense[i, :] = [r.get(p, 0) for p in dense_p]
-
-    dense_set = frozenset(dense_p)
-    primes = sorted(dense_p) + sorted(p for p in stats if p not in dense_set)
-    prime_idx = {p: idx for idx, p in enumerate(primes)}
-    plus = []
-    minus = []
-    for r in rels:
-        row_p, row_m = [], []
-        for p, e in r.items():
-            if p in dense_set:
-                continue
-            idx = prime_idx[p]
-            if e > 0:
-                row_p.extend(e * [idx])
-            else:
-                row_m.extend(-e * [idx])
-        plus.append(row_p)
-        minus.append(row_m)
-    return primes, dense, plus, minus
-
-
 def ref_matmul(rels, ps, v):
     prime_idx = {p: idx for idx, p in enumerate(ps)}
     out = []
@@ -114,28 +61,11 @@ def ref_matmul(rels, ps, v):
     return np.array(out, dtype=np.int32)
 
 
-def compile(src, defines, entry="main"):
-    with importlib.resources.path(__name__, src) as srcpath:
-        defines = [f"-D{k}={v}" for k, v in defines.items()]
-        p = subprocess.Popen(
-            ["glslc", "--target-env=vulkan1.3", "-I."]
-            + defines
-            + [f"-fentry-point={entry}", "-fshader-stage=compute", srcpath, "-o-"],
-            cwd=os.path.dirname(srcpath),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
-        print(p.args)
-        out, err = p.communicate(timeout=1)
-    if p.returncode:
-        raise Exception(f"shader compilation failed: code {p.returncode}")
-    return out
-
 
 def gpu_matmul(dense, plus, minus, v):
     dim, dense_n = dense.shape
     assert (dim * dense_n) % 4 == 0
-    SHADER = compile("spmv.comp", {"N": dim, "DENSE_N": dense_n})
+    SHADER = gpu.compile("spmv.comp", {"N": dim, "DENSE_N": dense_n})
     WGSIZE = 128
 
     mgr = kp.Manager(0)
@@ -218,7 +148,7 @@ def main():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus = rels_to_matrix(result)
+    basis2, dense, plus, minus = linalg.to_sparse_matrix(result)
     assert sorted(basis2) == basis
     print("Dense block")
     print(dense)

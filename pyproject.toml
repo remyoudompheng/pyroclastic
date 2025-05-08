@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools", "cython"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -19,6 +19,12 @@ dependencies = [
   "networkx>=3.2"
 ]
 
+[project.scripts]
+pyroclastic-sieve = "pyroclastic.sieve:main"
+pyroclastic-relations = "pyroclastic.relations:main"
+
+[tool.setuptools]
+ext-modules = [{name = "pyroclastic_flint_extras", sources = ["pyroclastic/pyroclastic_flint_extras.pyx"], libraries = ["flint"]}]
+
 [tool.setuptools.package-data]
 pyroclastic = ["*.comp"]
-
