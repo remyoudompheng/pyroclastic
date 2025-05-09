@@ -1,0 +1,147 @@
+// SpMV with block COO representation
+//
+// The matrix is cut into stripes of BM rows such that
+// the output accumulators (BM x MODULI) fit in local memory.
+//
+// The typical value is BM=256 and MODULI=8x32b or 4x64b (8kB shmem)
+//
+// Each stripe is stored in COO format (row % BM, col) packed as 32-bit values.
+
+#version 450
+
+#ifndef N
+#error Matrix dimension undefined
+#endif
+
+#ifndef DENSE_N
+#error Dense width undefined
+#endif
+
+#ifndef MODULI
+#error MODULI undefined
+#endif
+
+#ifdef INT64
+#define WORD_T int64_t
+#define UWORD_T uint64_t
+#else
+#define WORD_T int
+#define UWORD_T uint
+#endif
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+
+layout(local_size_x = BM, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
+layout(binding = 1) readonly buffer SparsePlus { uint plus[]; };
+layout(binding = 2) readonly buffer SparseMinus { uint minus[]; };
+layout(binding = 3) readonly buffer IdxPlus { uint idxPlus[]; };
+layout(binding = 4) readonly buffer IdxMinus { uint idxMinus[]; };
+// Vector of size 2N Moduli:
+// even iterations do V[N:2N] = M * V[0:N]
+// odd iterations do V[0:N] = M * V[N:2N]
+layout(binding = 5) coherent buffer V { UWORD_T v[]; };
+// Vector of identical values (1 per workgroup) indicating iteration count
+layout(binding = 6) coherent buffer Iter { uint iter[]; };
+// Output mask for Wiedemann algorithm sequence.
+layout(binding = 7) coherent buffer Wsel { uint8_t wsel[]; };
+// Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
+// wsel[idx]=1)
+layout(binding = 8) coherent buffer Wout { uint64_t wout[]; };
+layout(binding = 9) readonly buffer Moduli { UWORD_T moduli[MODULI]; };
+
+shared WORD_T acc[BM * MODULI];
+
+void main() {
+  uint stripe = gl_WorkGroupID.x;
+  uint witer = iter[stripe];
+  uint off0 = ((witer & 1) == 0) ? 0 : N * MODULI;
+  uint off1 = ((witer & 1) == 0) ? N * MODULI : 0;
+
+  uint tidx = gl_LocalInvocationID.x;
+
+  // Zero init shared memory.
+  for (uint i = 0; i < acc.length(); i += gl_WorkGroupSize.x) {
+    if (i + tidx < acc.length()) {
+      acc[i + tidx] = 0;
+    }
+  }
+
+  barrier();
+  memoryBarrierShared();
+
+  // Dense block
+  const uint dense_row = gl_GlobalInvocationID.x;
+  if (dense_row < N) {
+    const uint dense_base = dense_row * DENSE_N;
+    WORD_T dacc[MODULI];
+    for (uint j = 0; j < MODULI; j++)
+      dacc[j] = 0;
+    for (uint i = 0; i < DENSE_N; i++) {
+      int d_ki = dense[dense_base + i];
+      for (uint j = 0; j < MODULI; j++) {
+        dacc[j] += d_ki * WORD_T(v[off0 + MODULI * i + j]);
+      }
+    }
+    for (uint j = 0; j < MODULI; j++)
+      atomicAdd(acc[BM * j + tidx], dacc[j] % WORD_T(moduli[j]));
+  }
+
+  // +1 coefficients
+  const uint plus0 = idxPlus[stripe];
+  const uint plus1 = idxPlus[stripe + 1];
+  for (uint i = plus0; i < plus1; i += gl_WorkGroupSize.x) {
+    const uint idx = i + tidx;
+    if (idx >= plus1)
+      break;
+    // Split row,col
+    uint col = plus[idx];
+    const uint row = col % BM;
+    col /= BM;
+    for (uint j = 0; j < MODULI; j++) {
+      const WORD_T val = WORD_T(v[off0 + MODULI * col + j]);
+      atomicAdd(acc[BM * j + row], val);
+    }
+  }
+  // -1 coefficients
+  uint minus0 = idxMinus[stripe];
+  uint minus1 = idxMinus[stripe + 1];
+  for (uint i = minus0; i < minus1; i += gl_WorkGroupSize.x) {
+    uint idx = i + tidx;
+    if (idx >= minus1)
+      break;
+    // Split row,col
+    uint col = minus[idx];
+    const uint row = col % BM;
+    col /= BM;
+    for (uint j = 0; j < MODULI; j++) {
+      const WORD_T val = WORD_T(v[off0 + MODULI * col + j]);
+      atomicAdd(acc[BM * j + row], -val);
+    }
+  }
+
+  barrier();
+  memoryBarrierShared();
+
+  // Output result to next row
+  uint row = gl_GlobalInvocationID.x;
+  if (row < N) {
+    for (uint j = 0; j < MODULI; j++) {
+      UWORD_T vij = UWORD_T(acc[BM * j + tidx] % WORD_T(moduli[j]));
+      v[off1 + MODULI * row + j] = vij;
+    }
+  }
+
+  if (tidx == 0)
+    iter[stripe] = witer + 1;
+  if (tidx == wsel[stripe]) {
+    for (uint j = 0; j < MODULI; j++) {
+      atomicAdd(wout[MODULI * witer + j], acc[BM * j + tidx] % WORD_T(moduli[j]));
+    }
+  }
+}

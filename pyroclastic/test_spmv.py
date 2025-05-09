@@ -11,6 +11,7 @@ from . import gpu
 from . import relations
 from . import linalg
 
+
 def random_relations(N: int, primes: list, size: int, dense: list):
     sum1p = sum(1.0 / p for p in primes)
     sumlp = sum(math.log2(p) / p for p in primes)
@@ -61,7 +62,6 @@ def ref_matmul(rels, ps, v):
     return np.array(out, dtype=np.int32)
 
 
-
 def gpu_matmul(dense, plus, minus, v):
     dim, dense_n = dense.shape
     assert (dim * dense_n) % 4 == 0
@@ -91,26 +91,99 @@ def gpu_matmul(dense, plus, minus, v):
     xidxp = mgr.tensor_t(aidx_plus)
     xidxm = mgr.tensor_t(aidx_minus)
 
-    xin = mgr.tensor_t(np.array(v, dtype=np.uint32))
+    xv = mgr.tensor_t(np.zeros(2 * dim, dtype=np.uint32))
+    xv.data()[:dim] = v
+    xiter = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
     xout = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
     xmod = mgr.tensor_t(np.array([65537], dtype=np.uint32))
 
     algo = mgr.algorithm(
-        [xd, xplus, xminus, xidxp, xidxm, xin, xout, xmod],
+        [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xout, xmod],
         SHADER,
         workgroup=((dim + WGSIZE - 1) // WGSIZE, 1, 1),
     )
     (
         mgr.sequence()
         .record(
-            kp.OpTensorSyncDevice([xd, xplus, xminus, xidxp, xidxm, xin, xout, xmod])
+            kp.OpTensorSyncDevice(
+                [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
+            )
         )
         .record(kp.OpAlgoDispatch(algo))
-        .record(kp.OpTensorSyncLocal([xout]))
+        .record(kp.OpTensorSyncLocal([xv]))
         .eval()
     )
 
-    return np.copy(xout.data())
+    return np.copy(xv.data()[dim:])
+
+
+def block_coo(dense, plus, minus, v):
+    BM = 32
+    dim, dense_n = dense.shape
+    assert (dim * dense_n) % 4 == 0
+    SHADER = gpu.compile(
+        "spmv_blockcoo.comp", {"N": dim, "DENSE_N": dense_n, "MODULI": 1, "BM": 32}
+    )
+
+    mgr = kp.Manager(0)
+    xd = mgr.tensor_t(dense.flatten().view(np.uint32))
+
+    aplus, aminus = [], []
+    idx_plus, idx_minus = [], []
+    blk_plus, blk_minus = [], []
+    assert len(plus) == dim
+    assert len(minus) == dim
+    for i in range(dim):
+        if i % BM == 0:
+            aplus.extend(sorted(blk_plus))
+            aminus.extend(sorted(blk_minus))
+            idx_plus.append(len(aplus))
+            idx_minus.append(len(aminus))
+            blk_plus, blk_minus = [], []
+        blk_plus.extend((i % BM) + BM * j for j in plus[i])
+        blk_minus.extend((i % BM) + BM * j for j in minus[i])
+    if dim % BM != 0:
+        aplus.extend(sorted(blk_plus))
+        aminus.extend(sorted(blk_minus))
+        idx_plus.append(len(aplus))
+        idx_minus.append(len(aminus))
+    assert len(aplus) == sum(len(l) for l in plus)
+    assert len(aminus) == sum(len(l) for l in minus)
+    assert len(idx_plus) == 1 + (dim + BM - 1) // BM
+    assert len(idx_minus) == 1 + (dim + BM - 1) // BM
+    print("Block sizes")
+    print([j - i for i, j in zip(idx_plus, idx_plus[1:])])
+    print([j - i for i, j in zip(idx_minus, idx_minus[1:])])
+
+    xplus = mgr.tensor_t(np.array(aplus, dtype=np.uint32))
+    xminus = mgr.tensor_t(np.array(aminus, dtype=np.uint32))
+    xidxp = mgr.tensor_t(np.array(idx_plus, dtype=np.uint32))
+    xidxm = mgr.tensor_t(np.array(idx_minus, dtype=np.uint32))
+
+    xv = mgr.tensor_t(np.zeros(2 * dim, dtype=np.uint32))
+    xv.data()[:dim] = v
+    xiter = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+    xout = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+    xmod = mgr.tensor_t(np.array([65537], dtype=np.uint32))
+
+    algo = mgr.algorithm(
+        [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xout, xmod],
+        SHADER,
+        workgroup=((dim + BM - 1) // BM, 1, 1),
+    )
+    (
+        mgr.sequence()
+        .record(
+            kp.OpTensorSyncDevice(
+                [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
+            )
+        )
+        .record(kp.OpAlgoDispatch(algo))
+        .record(kp.OpTensorSyncLocal([xv]))
+        .eval()
+    )
+
+    return np.copy(xv.data()[dim:])
 
 
 def main():
@@ -162,6 +235,11 @@ def main():
     print(mv2)
 
     assert np.all(mv1 == mv2)
+
+    mv3 = block_coo(dense, plus, minus, v2)
+    print(mv3)
+
+    assert np.all(mv1 == mv3)
 
 
 if __name__ == "__main__":

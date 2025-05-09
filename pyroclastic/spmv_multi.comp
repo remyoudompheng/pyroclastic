@@ -1,11 +1,10 @@
-// Sparse Matrix vector multiplication
+// Sparse Matrix vector multiplication (multi modular)
+//
 // The memory representation of M (or submatrices of M) will be:
 // - a dense block of 30-50 columns with high density
 // - a CSR for coefficients +1 (an index may appear multiple times for larger
 // values)
 // - a CSR for coefficients -1
-//
-// Indices are stored as 16-bit values so the maximal matrix dimension is 65536.
 
 #version 450
 
@@ -17,21 +16,29 @@
 #error Dense width undefined
 #endif
 
+#ifndef MODULI
+#error MODULI undefined
+#endif
+
+#ifndef BATCH_ROW
+#error BATCH_ROW undefined
+#endif
+
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_shader_atomic_int64 : require
 
-// Each thread handles a row.
-layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Each thread handles a modulus (x) and row (y)
+layout(local_size_x = MODULI, local_size_y = BATCH_ROW, local_size_z = 1) in;
 
 layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
 layout(binding = 1) readonly buffer SparsePlus { uint16_t plus[]; };
 layout(binding = 2) readonly buffer SparseMinus { uint16_t minus[]; };
 layout(binding = 3) readonly buffer IdxPlus { uint idxPlus[]; };
 layout(binding = 4) readonly buffer IdxMinus { uint idxMinus[]; };
-// Vector of size 2N:
+// Vector of size 2N Moduli:
 // even iterations do V[N:2N] = M * V[0:N]
 // odd iterations do V[0:N] = M * V[N:2N]
 layout(binding = 5) buffer V { uint v[]; };
@@ -44,25 +51,26 @@ layout(binding = 8) coherent buffer Wout { uint64_t wout[]; };
 layout(binding = 9) readonly buffer Moduli { uint moduli[]; };
 
 void main() {
-  uint idx = iter[gl_WorkGroupID.x];
-  uint off0 = ((idx & 1) == 0) ? 0 : N;
-  uint off1 = ((idx & 1) == 0) ? N : 0;
-  uint p = moduli[0];
+  uint idx = iter[gl_WorkGroupID.y];
+  uint midx = gl_LocalInvocationID.x;
+  uint off0 = ((idx & 1) == 0) ? 0 : N * MODULI;
+  uint off1 = ((idx & 1) == 0) ? N * MODULI : 0;
+  uint p = moduli[midx];
   int pi = int(p);
-  uint row = gl_GlobalInvocationID.x;
+  uint row = gl_GlobalInvocationID.y;
   if (row >= N) return;
   int acc = 0;
   // Dense block
   uint dense_base = row * DENSE_N;
   for (uint i = 0; i < DENSE_N; i++) {
-    acc += int(dense[dense_base + i]) * int(v[off0 + i]);
+    acc += int(dense[dense_base + i]) * int(v[off0 + MODULI * i + midx]);
   }
   acc = acc % pi;
   // +1 coefficients
   uint plus0 = idxPlus[row];
   uint plus1 = idxPlus[row + 1];
   for (uint i = plus0; i < plus1; i++) {
-    acc += int(v[off0 + plus[i]]);
+    acc += int(v[off0 + MODULI * plus[i] + midx]);
     if (acc >= pi)
       acc -= pi;
   }
@@ -70,15 +78,15 @@ void main() {
   uint minus0 = idxMinus[row];
   uint minus1 = idxMinus[row + 1];
   for (uint i = minus0; i < minus1; i++) {
-    acc -= int(v[off0 + minus[i]]);
+    acc -= int(v[off0 + MODULI * minus[i] + midx]);
     if (acc < 0)
       acc += pi;
   }
   // Output result to next row
-  v[off1 + row] = uint(acc);
+  v[off1 + MODULI * row + midx] = uint(acc);
   barrier();
   if (gl_LocalInvocationID.x == 0)
-	  iter[gl_WorkGroupID.x] = idx + 1;
-  if (gl_LocalInvocationID.x == wsel[gl_WorkGroupID.x])
-	  atomicAdd(wout[idx], acc);
+	  iter[gl_WorkGroupID.y] = idx + 1;
+  if (gl_LocalInvocationID.y == wsel[gl_WorkGroupID.y])
+	  atomicAdd(wout[MODULI * idx + midx], acc);
 }

@@ -155,6 +155,7 @@ def prune2(rawrels: list, B1: int, pbase: int):
 
     return pruned, len(rels) - len(cols) - pbase
 
+
 def _as_dicts(rels: list[list]) -> list[dict]:
     dicts = []
     for r in rels:
@@ -168,6 +169,7 @@ def _as_dicts(rels: list[list]) -> list[dict]:
                 v[k] += 1
         dicts.append(v)
     return dicts
+
 
 def step_filter(rels, datadir: pathlib.Path):
     rels = _as_dicts(rels)

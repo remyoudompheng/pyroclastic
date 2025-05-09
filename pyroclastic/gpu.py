@@ -1,4 +1,5 @@
 import importlib
+import json
 import logging
 import os
 import subprocess
@@ -20,4 +21,16 @@ def compile(src, defines, entry="main"):
         raise EnvironmentError(f"shader compilation failed: code {p.returncode}")
     return out
 
+def device_info():
+    out = subprocess.check_output("vulkaninfo -j -o /dev/stdout", shell=True)
+    info = json.loads(out)
+    return info
+
+def stamp_period():
+    devinfo = device_info()
+    props = devinfo["capabilities"]["device"]["properties"]
+    devname = props["VkPhysicalDeviceProperties"]["deviceName"]
+    return props["VkPhysicalDeviceProperties"]["limits"][
+        "timestampPeriod"
+    ]
 
