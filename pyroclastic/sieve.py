@@ -188,7 +188,7 @@ def primebase(N, B):
             pass
 
 
-def build_relation(value, idx, facs, B1=None, B2=None):
+def build_relation(value, idx, facs, B1=None, B2=None, NLARGE=2):
     row = []
     v = value
     assert v > 0
@@ -202,7 +202,7 @@ def build_relation(value, idx, facs, B1=None, B2=None):
             v //= f
     if v == 1:
         return row
-    if v > B2 * B2:
+    if v > B2 ** NLARGE:
         return None
     cofacs = flint.fmpz(v).factor_smooth(bits=20)
     for _p, _e in cofacs:
@@ -213,7 +213,7 @@ def build_relation(value, idx, facs, B1=None, B2=None):
     return row
 
 
-def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, OUTSTRIDE):
+def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, NLARGE, OUTSTRIDE):
     if isinstance(bout, bytes):
         vout = np.frombuffer(bout, dtype=np.int32)
         vfacs = np.frombuffer(bfacs, dtype=np.uint32)
@@ -235,7 +235,7 @@ def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, OUTSTRIDE):
             u = 2 * _A * x + _B
             assert u * u == 4 * A * v + N
             # In the class group: (A, B, C) * (v, u, A) == 1
-            row = build_relation(v, x, _facs, B1=B1, B2=B2)
+            row = build_relation(v, x, _facs, B1=B1, B2=B2, NLARGE=NLARGE)
             if row is None or any(_r > B2 for _r in row):
                 # factors too large
                 continue
@@ -298,16 +298,31 @@ PARAMS2 = (
     (320, 400_000, 25, 1, 25, 12, 14, 2),
     (340, 600_000, 25, 1, 25, 12, 16, 2),
     (360, 1000_000, 25, 1, 25, 12, 18, 2),
+    (380, 1500_000, 25, 1, 25, 12, 20, 2),
+    (400, 2000_000, 25, 1, 25, 12, 24, 2),
 )
 
+# Triple large prime
+PARAMS3 = (
+    (360, 500_000, 50, 2, 55, 12, 18, 2), # too slow
+    (380, 750_000, 50, 1, 45, 12, 12, 2),
+    (400, 1000_000, 50, 1, 50, 12, 24, 2),
+    (500, 7000_000, 200, 1, 70, 12, 16, 2)
+)
 
 def get_params(N: int):
     sz = N.bit_length()
     res = None
-    for p in PARAMS1 if sz < 200 else PARAMS2:
+    if sz < 200:
+        PARAMS, nlarge = PARAMS1, 1
+    elif sz < 450:
+        PARAMS, nlarge = PARAMS2, 2
+    else:
+        PARAMS, nlarge = PARAMS3, 3
+    for p in PARAMS:
         if p[0] <= sz:
             res = p
-    return res[1:]
+    return res[1:] + (nlarge,)
 
 
 # At most 2 GPU jobs at a time
@@ -415,6 +430,7 @@ class Siever:
         BLEN = self.wargs["BLEN"]
         OUTSTRIDE = self.wargs["OUTSTRIDE"]
         D, B1, B2 = self.wargs["D"], self.wargs["B1"], self.wargs["B2"]
+        NLARGE = self.wargs["NLARGE"]
         A, Bi = make_poly(D, ak, self.roots_d)
 
         xargs, xb, xout, xfacs = self.tensors
@@ -442,7 +458,7 @@ class Siever:
         vfacs = xfacs.data()
 
         nreports, rows = process_sieve_reports(
-            (A, ak, Bi), vout.astype(np.int32), vfacs, D, B1, B2, OUTSTRIDE
+            (A, ak, Bi), vout.astype(np.int32), vfacs, D, B1, B2, NLARGE, OUTSTRIDE
         )
         return dt, nreports, rows
 
@@ -481,7 +497,7 @@ def main():
     logging.debug(f"Running on device {devname}")
 
     N = args.N
-    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG = get_params(N)
+    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG, NLARGE = get_params(N)
     B2 = B2k * B1
     M = ITERS * SEGMENT_SIZE // 2
 
@@ -541,7 +557,7 @@ def main():
             },
             w,
         )
-    w = open(os.path.join(args.OUTDIR, "relations.sieve"), "w")
+    w = open(os.path.join(args.OUTDIR, "relations.sieve"), "w", buffering=1)
 
     WARGS = {
         "primes": primes,
@@ -549,6 +565,7 @@ def main():
         "D": D,
         "B1": B1,
         "B2": B2,
+        "NLARGE": NLARGE,
         "AFACS": AFACS,
         "BLEN": BLEN,
         "POLYS_PER_WG": POLYS_PER_WG,
