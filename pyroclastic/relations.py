@@ -315,8 +315,12 @@ def step_filter(rels, datadir: pathlib.Path):
 
     # For the last step, we just want to minimize length.
     if excess > MIN_EXCESS:
-        #scores = [(len(r), ridx) for ridx, r in enumerate(rels) if r is not None]
-        scores = [(sum(abs(e) for e in r.values()), ridx) for ridx, r in enumerate(rels) if r is not None]
+        # scores = [(len(r), ridx) for ridx, r in enumerate(rels) if r is not None]
+        scores = [
+            (sum(abs(e) for e in r.values()), ridx)
+            for ridx, r in enumerate(rels)
+            if r is not None
+        ]
         scores.sort()
         to_remove = excess - MIN_EXCESS
         worst = scores[-to_remove:]
@@ -337,7 +341,7 @@ def step_filter(rels, datadir: pathlib.Path):
     print(
         f"Final: {nc} columns {nr} rows excess={nr-nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={dt:.1f}s"
     )
-    if False:
+    if datadir is not None:
         # Dump result
         with open(datadir / "relations.removed", "w") as w:
             for p, rel in reversed(saved_pivots):
