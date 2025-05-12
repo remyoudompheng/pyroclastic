@@ -61,7 +61,14 @@ def to_sparse_matrix(rels):
     sparse_weight = sum(
         sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
     ) / float(len(rels))
+    sparse_min = min(
+        sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
+    )
+    sparse_max = max(
+        sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
+    )
     logging.info(f"Sparse block has avg weight {sparse_weight:.1f} per row")
+    logging.info(f"Sparse block has min/max weight {sparse_min:.1f}<{sparse_max:.1f} per row")
 
     for r in rels:
         for p in dense_p:
@@ -122,6 +129,157 @@ def check_wiedemann(sequence, poly, p):
             )
             ok = ok and conv_i % p == 0
         return ok
+
+
+class CSRMatrix:
+    def __init__(self, dense, plus, minus, basis, weight):
+        dim, dense_n = dense.shape
+        assert (dim * dense_n) % 4 == 0
+        self.defines = {"N": dim, "DENSE_N": dense_n}
+
+        self.basis = basis
+        self.dim = dim
+
+        # Prepare tensors
+        mgr = kp.Manager(0)
+        xd = mgr.tensor_t(dense.flatten().view(np.uint32))
+
+        rowlen_plus = [len(l) for l in plus]
+        rowlen_minus = [len(l) for l in minus]
+        aidx_plus = np.cumsum(
+            np.array([0] + rowlen_plus, dtype=np.uint32), dtype=np.uint32
+        )
+        aidx_minus = np.cumsum(
+            np.array([0] + rowlen_minus, dtype=np.uint32), dtype=np.uint32
+        )
+        size_plus = int(aidx_plus[-1])
+        size_minus = int(aidx_minus[-1])
+        aplus = np.zeros(size_plus + (size_plus & 1), dtype=np.uint16)
+        aminus = np.zeros(size_minus + (size_minus & 1), dtype=np.uint16)
+        for i, l in enumerate(plus):
+            aplus[aidx_plus[i] : aidx_plus[i + 1]] = l
+        for i, l in enumerate(minus):
+            aminus[aidx_minus[i] : aidx_minus[i + 1]] = l
+        # Kompute wants uint32, cast arrays to make it happy
+        xplus = mgr.tensor_t(aplus.view(np.uint32))
+        xminus = mgr.tensor_t(aminus.view(np.uint32))
+        xidxp = mgr.tensor_t(aidx_plus)
+        xidxm = mgr.tensor_t(aidx_minus)
+
+        self.mgr = mgr
+        self.tensors = [xd, xplus, xminus, xidxp, xidxm]
+        self.flops = 2 * dim * dense_n + size_plus + size_minus
+        self.weight = weight
+        logging.debug(
+            f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
+        )
+
+    def wiedemann_multi(self, ls: list[int], check=False):
+        "Perform Wiedemann algorithm for multiple small moduli"
+        MODULI = len(ls)
+        if any(l.bit_length() > 32 for l in ls):
+            INT64 = True
+            word_t = np.uint64
+        else:
+            INT64 = False
+            word_t = np.uint32
+        mgr = self.mgr
+        dim = self.dim
+        assert dim >= 256
+        if dim < 5000:
+            BATCHSIZE = 64
+        elif dim < 10000:
+            BATCHSIZE = 32
+        else:
+            BATCHSIZE = 16
+        ITERS = 2 * dim
+        ITERS = (ITERS // BATCHSIZE + 2) * BATCHSIZE
+        # Tensor holding M^k V
+        xv = mgr.tensor_t(np.zeros(dim * MODULI, dtype=word_t).view(np.uint32))
+        xiter = mgr.tensor_t(np.zeros(MODULI, dtype=np.uint32))
+        # Random weights S (idx such that S[idx]=1 in each workgroup)
+        SEL_BLOCK = 256
+        sel = np.zeros(dim // SEL_BLOCK // 8 * 8 + 16, dtype=np.uint8)
+        for i in range(len(sel)):
+            # always zero on last workgroup
+            sel[i] = random.randrange(SEL_BLOCK)
+        xsel = mgr.tensor_t(sel.view(np.uint32))
+        # Output sequence out[k] = S M^k V
+        xout = mgr.tensor_t(np.zeros(MODULI * ITERS, dtype=np.uint64).view(np.uint32))
+        xmod = mgr.tensor_t(np.array(ls, dtype=word_t).view(np.uint32))
+
+        xd, xplus, xminus, xidxp, xidxm = self.tensors
+        defines = self.defines | {"BATCHSIZE": BATCHSIZE}
+        if INT64:
+            defines |= {"INT64": 1}
+        kernel = gpu.compile("spmv_small.comp", defines)
+        algo = mgr.algorithm(
+            [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xsel, xout, xmod],
+            kernel,
+            workgroup=(MODULI, 1, 1),
+        )
+        (
+            mgr.sequence()
+            .record(
+                kp.OpTensorSyncDevice(
+                    [xd, xplus, xminus, xidxp, xidxm, xsel, xout, xmod]
+                )
+            )
+            .eval()
+        )
+
+        v = xv.data().view(word_t).reshape((MODULI, dim))
+        for i, l in enumerate(ls):
+            v[i, :] = np.random.randint(0, l, dim, dtype=word_t)
+        sequence = []
+        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+
+        mat_size = 4 * (
+            xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
+        )
+        vec_size = 4 * xv.size()
+        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+
+        t0 = time.monotonic()
+        gpu_ticks = 0.0
+        for i in range(0, ITERS, BATCHSIZE):
+            # Matrix multiplication is very fast so we launch multiple
+            # iterations per batch.
+            seq = mgr.sequence(total_timestamps=2 * BATCHSIZE)
+            seq.record(kp.OpAlgoDispatch(algo))
+            seq.eval()
+
+            stamps = seq.get_timestamps()
+            gpu_ticks += stamps[-1] - stamps[0]
+
+        mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
+        vout = xout.data().view(np.uint64).reshape((ITERS, MODULI))
+
+        dt = time.monotonic() - t0
+        gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
+        flops = self.flops * ITERS * MODULI / dt
+        flops2 = self.weight * ITERS * MODULI / dt
+        logging.info(
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {flops2/1e9:.2f} GOPS)"
+        )
+
+        polys = []
+        for i, li in enumerate(ls):
+            sequence = [int(x) % li for x in vout[:, i]]
+
+            poly = flint_extras.berlekamp_massey(sequence, li)
+            assert len(poly) <= dim + 1, len(poly)
+            polys.append(poly)
+            if check:
+                assert check_wiedemann(sequence, poly, li)
+                assert len(poly) == dim + 1
+                det = -poly[0] * pow(poly[dim], -1, li) % li
+                if i < 5 or i > len(ls) - 5:
+                    logging.info(
+                        f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
+                    )
+
+        return polys
 
 
 class BlockCOO:
@@ -293,7 +451,9 @@ class BlockCOO:
                 assert len(poly) == dim + 1
                 det = -poly[0] * pow(poly[dim], -1, li) % li
                 if i < 5 or i > len(ls) - 5:
-                    logging.info(f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}")
+                    logging.info(
+                        f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
+                    )
 
         return polys
 
@@ -364,7 +524,24 @@ def main():
     Mat = SpMV(dense, plus, minus, basis, weight)
     Mat.wiedemann_multi(moduli[:16], check=CHECK)
 
+    Mat1 = CSRMatrix(dense, plus, minus, basis, weight)
+    if dim < 16384:
+        logging.info("Running with 16 moduli (small)")
+        Mat1.wiedemann_multi(moduli[:16], check=CHECK)
+        logging.info("Running with 64 moduli (small)")
+        Mat1.wiedemann_multi(moduli[:64], check=CHECK)
+        logging.info("Running with 128 moduli (small)")
+        Mat1.wiedemann_multi(moduli[:128], check=CHECK)
+
     moduli64 = [10000000000000061] + moduli
+
+    if dim < 8192:
+        logging.info("Running with 16 moduli64 (small)")
+        Mat1.wiedemann_multi(moduli64[:16], check=CHECK)
+        logging.info("Running with 64 moduli64 (small)")
+        Mat1.wiedemann_multi(moduli64[:64], check=CHECK)
+        logging.info("Running with 128 moduli64 (small)")
+        Mat1.wiedemann_multi(moduli64[:128], check=CHECK)
 
     Mat2 = BlockCOO(dense, plus, minus, basis, weight)
     logging.info("Running BlockCOO v2 with 8 moduli")

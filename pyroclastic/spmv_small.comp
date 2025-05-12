@@ -1,0 +1,131 @@
+// Sparse Matrix vector multiplication for small sizes
+//
+// This shader uses 1 threadgroup per modulus, with
+// the following constraint: shared memory can hold
+// entire input vector V (max size 8k uint64 or 16k uint32),
+// and register file can hold entire output vector MV
+// (register file is always larger than shared memory).
+//
+// A RDNA CU can use 64kB of shared memory and 64kB of vector registers
+//
+// The following RAM ops are needed for each matrix-vector product
+// - read input vector
+// - read matrix once
+// - write output vector
+
+#version 450
+
+#ifndef N
+#error Matrix dimension undefined
+#endif
+
+#ifndef DENSE_N
+#error Dense width undefined
+#endif
+
+#ifdef INT64
+#define WORD_T int64_t
+#define UWORD_T uint64_t
+#else
+#define WORD_T int
+#define UWORD_T uint
+#endif
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+
+// Each thread handles a row.
+layout(local_size_x = 1024, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
+layout(binding = 1) readonly buffer SparsePlus { uint16_t plus[]; };
+layout(binding = 2) readonly buffer SparseMinus { uint16_t minus[]; };
+layout(binding = 3) readonly buffer IdxPlus { uint idxPlus[]; };
+layout(binding = 4) readonly buffer IdxMinus { uint idxMinus[]; };
+// Vector of size N * WG:
+layout(binding = 5) buffer V { UWORD_T v[]; };
+// Vector of identical values (1 per workgroup) indicating iteration count
+layout(binding = 6) coherent buffer Iter { uint iter[]; };
+// Output mask for Wiedemann algorithm sequence.
+layout(binding = 7) coherent buffer Wsel { uint8_t wsel[]; };
+// Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
+// wsel[idx]=1)
+layout(binding = 8) coherent buffer Wout { uint64_t wout[]; };
+layout(binding = 9) readonly buffer Moduli { UWORD_T moduli[]; };
+
+shared UWORD_T vin[N];
+
+void main() {
+  uint midx = gl_WorkGroupID.x;
+  uint tidx = gl_LocalInvocationID.x;
+  uint vbase = gl_WorkGroupID.x * N;
+  UWORD_T p = moduli[midx];
+
+  // for (uint batch = 0; batch < BATCHSIZE; batch++) {
+  //  Copy input vector to shared memory.
+  for (uint i = 0; i < N; i += gl_WorkGroupSize.x) {
+    if (i + tidx < N)
+      vin[i + tidx] = v[vbase + i + tidx];
+  }
+  uint witer = iter[gl_WorkGroupID.x];
+
+  barrier();
+  memoryBarrierShared();
+
+  WORD_T accs[N / gl_WorkGroupSize.x + 1];
+  for (uint iter = 0; iter < BATCHSIZE; iter++) {
+    for (uint b = 0; b < accs.length(); b++) {
+      const uint row = b * gl_WorkGroupSize.x + tidx;
+      if (row >= N)
+        break;
+      WORD_T acc = 0;
+      // Dense block
+      uint dense_base = row * DENSE_N;
+      for (uint i = 0; i < DENSE_N; i++) {
+        acc += WORD_T(dense[dense_base + i]) * WORD_T(vin[i]);
+      }
+      // +1 coefficients
+      uint plus0 = idxPlus[row];
+      uint plus1 = idxPlus[row + 1];
+      for (uint i = plus0; i < plus1; i++) {
+        acc += WORD_T(vin[plus[i]]);
+      }
+      // -1 coefficients
+      uint minus0 = idxMinus[row];
+      uint minus1 = idxMinus[row + 1];
+      for (uint i = minus0; i < minus1; i++) {
+        acc -= WORD_T(vin[minus[i]]);
+      }
+      // Output result to next row
+      acc %= WORD_T(p);
+      accs[b] = acc;
+      if (row % 256 == wsel[row / 256])
+        atomicAdd(wout[witer * moduli.length() + midx], acc);
+    }
+    barrier();
+    // Flush to shmem
+    for (uint b = 0; b < accs.length(); b++) {
+      const uint row = b * gl_WorkGroupSize.x + tidx;
+      if (row >= N)
+        break;
+      vin[row] = UWORD_T(accs[b]);
+    }
+    barrier();
+    memoryBarrierShared();
+    witer += 1;
+  }
+
+  if (gl_LocalInvocationID.x == 0)
+    iter[gl_WorkGroupID.x] = witer;
+
+  // Write back to RAM
+  for (uint b = 0; b < accs.length(); b++) {
+    const uint row = b * gl_WorkGroupSize.x + tidx;
+    if (row >= N)
+      break;
+    v[vbase + row] = UWORD_T(accs[b]);
+  }
+}
