@@ -27,6 +27,7 @@ D = 400 bits => dim 50000
 """
 
 import logging
+import math
 import pathlib
 import random
 import time
@@ -61,14 +62,13 @@ def to_sparse_matrix(rels):
     sparse_weight = sum(
         sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
     ) / float(len(rels))
-    sparse_min = min(
-        sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
-    )
-    sparse_max = max(
-        sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
-    )
     logging.info(f"Sparse block has avg weight {sparse_weight:.1f} per row")
-    logging.info(f"Sparse block has min/max weight {sparse_min:.1f}<{sparse_max:.1f} per row")
+    norm_plus = max(
+        sum(abs(e) for p, e in r.items() if e > 0) for r in rels
+    )
+    norm_minus = max(
+        sum(abs(e) for p, e in r.items() if e < 0) for r in rels
+    )
 
     for r in rels:
         for p in dense_p:
@@ -107,7 +107,7 @@ def to_sparse_matrix(rels):
                 row_m.extend(-e * [idx])
         plus.append(row_p)
         minus.append(row_m)
-    return primes, dense, plus, minus
+    return primes, dense, plus, minus, max(norm_plus, norm_minus)
 
 
 def check_wiedemann(sequence, poly, p):
@@ -144,31 +144,27 @@ class CSRMatrix:
         mgr = kp.Manager(0)
         xd = mgr.tensor_t(dense.flatten().view(np.uint32))
 
-        rowlen_plus = [len(l) for l in plus]
-        rowlen_minus = [len(l) for l in minus]
-        aidx_plus = np.cumsum(
-            np.array([0] + rowlen_plus, dtype=np.uint32), dtype=np.uint32
-        )
-        aidx_minus = np.cumsum(
-            np.array([0] + rowlen_minus, dtype=np.uint32), dtype=np.uint32
-        )
-        size_plus = int(aidx_plus[-1])
-        size_minus = int(aidx_minus[-1])
-        aplus = np.zeros(size_plus + (size_plus & 1), dtype=np.uint16)
-        aminus = np.zeros(size_minus + (size_minus & 1), dtype=np.uint16)
-        for i, l in enumerate(plus):
-            aplus[aidx_plus[i] : aidx_plus[i + 1]] = l
-        for i, l in enumerate(minus):
-            aminus[aidx_minus[i] : aidx_minus[i + 1]] = l
+        # Merge back +1/-1 coefficients
+        sparses = []
+        for rp, rm in zip(plus, minus):
+            row = rp + [-p for p in rm]
+            row.sort(key=abs)
+            sparses.append(row)
+
+        rowlens = [len(l) for l in sparses]
+        aidx = np.cumsum(np.array([0] + rowlens, dtype=np.uint32), dtype=np.uint32)
+        sparsesize = sum(rowlens)
+        sparsesize += sparsesize & 1
+        arows = np.zeros(sparsesize, dtype=np.int16)
+        for i, l in enumerate(sparses):
+            arows[aidx[i] : aidx[i + 1]] = l
         # Kompute wants uint32, cast arrays to make it happy
-        xplus = mgr.tensor_t(aplus.view(np.uint32))
-        xminus = mgr.tensor_t(aminus.view(np.uint32))
-        xidxp = mgr.tensor_t(aidx_plus)
-        xidxm = mgr.tensor_t(aidx_minus)
+        xrows = mgr.tensor_t(arows.view(np.uint32))
+        xidx = mgr.tensor_t(aidx)
 
         self.mgr = mgr
-        self.tensors = [xd, xplus, xminus, xidxp, xidxm]
-        self.flops = 2 * dim * dense_n + size_plus + size_minus
+        self.tensors = [xd, xrows, xidx]
+        self.flops = 2 * dim * dense_n + sparsesize
         self.weight = weight
         logging.debug(
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
@@ -208,23 +204,19 @@ class CSRMatrix:
         xout = mgr.tensor_t(np.zeros(MODULI * ITERS, dtype=np.uint64).view(np.uint32))
         xmod = mgr.tensor_t(np.array(ls, dtype=word_t).view(np.uint32))
 
-        xd, xplus, xminus, xidxp, xidxm = self.tensors
+        xd, xrows, xidx = self.tensors
         defines = self.defines | {"BATCHSIZE": BATCHSIZE}
         if INT64:
             defines |= {"INT64": 1}
         kernel = gpu.compile("spmv_small.comp", defines)
         algo = mgr.algorithm(
-            [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xsel, xout, xmod],
+            [xd, xrows, xidx, xv, xiter, xsel, xout, xmod],
             kernel,
             workgroup=(MODULI, 1, 1),
         )
         (
             mgr.sequence()
-            .record(
-                kp.OpTensorSyncDevice(
-                    [xd, xplus, xminus, xidxp, xidxm, xsel, xout, xmod]
-                )
-            )
+            .record(kp.OpTensorSyncDevice([xd, xrows, xidx, xsel, xout, xmod]))
             .eval()
         )
 
@@ -234,9 +226,7 @@ class CSRMatrix:
         sequence = []
         mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
 
-        mat_size = 4 * (
-            xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
-        )
+        mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
         logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
 
@@ -506,8 +496,15 @@ def main():
             break
 
     weight = sum(len(r) for r in rels)
-    basis, dense, plus, minus = to_sparse_matrix(rels)
+    basis, dense, plus, minus, norm = to_sparse_matrix(rels)
     assert sorted(basis) == basis1
+
+    max_mod32 = (2**31) // norm
+    max_mod64 = (2**63) // norm
+    modratio = math.log2(max_mod64) / math.log2(max_mod32)
+    logging.info(
+            f"Matrix has norm {norm} max modulus32 {max_mod32} max64 {max_mod64} ratio {modratio:.2f}"
+    )
 
     # print("Dense block")
     # print(dense)
@@ -518,14 +515,14 @@ def main():
 
     CHECK = True
 
-    moduli = [x for x in range(1000_000, 1010000) if flint.fmpz(x).is_prime()]
+    moduli = [x for x in range(max_mod32 - 10000, max_mod32) if flint.fmpz(x).is_prime()]
 
     logging.info("Running with 16 moduli (old kernel)")
     Mat = SpMV(dense, plus, minus, basis, weight)
     Mat.wiedemann_multi(moduli[:16], check=CHECK)
 
     Mat1 = CSRMatrix(dense, plus, minus, basis, weight)
-    if dim < 16384:
+    if dim < gpu.max_shmem() // 4:
         logging.info("Running with 16 moduli (small)")
         Mat1.wiedemann_multi(moduli[:16], check=CHECK)
         logging.info("Running with 64 moduli (small)")
@@ -535,7 +532,7 @@ def main():
 
     moduli64 = [10000000000000061] + moduli
 
-    if dim < 8192:
+    if dim < gpu.max_shmem() // 8:
         logging.info("Running with 16 moduli64 (small)")
         Mat1.wiedemann_multi(moduli64[:16], check=CHECK)
         logging.info("Running with 64 moduli64 (small)")

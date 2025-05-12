@@ -7,6 +7,7 @@
 // (register file is always larger than shared memory).
 //
 // A RDNA CU can use 64kB of shared memory and 64kB of vector registers
+// (max size 8k uint64 or 16k uint32).
 //
 // The following RAM ops are needed for each matrix-vector product
 // - read input vector
@@ -31,30 +32,34 @@
 #define UWORD_T uint
 #endif
 
-#extension GL_EXT_control_flow_attributes : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#define HAS_SHUFFLE 1
+
+#extension GL_EXT_control_flow_attributes2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
 #extension GL_EXT_shader_atomic_int64 : require
+#if HAS_SHUFFLE
+#extension GL_KHR_shader_subgroup_shuffle : require
+#ifdef INT64
+#extension GL_EXT_shader_subgroup_extended_types_int64 : require
+#endif
+#endif
 
 // Each thread handles a row.
 layout(local_size_x = 1024, local_size_y = 1, local_size_z = 1) in;
 
 layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
-layout(binding = 1) readonly buffer SparsePlus { uint16_t plus[]; };
-layout(binding = 2) readonly buffer SparseMinus { uint16_t minus[]; };
-layout(binding = 3) readonly buffer IdxPlus { uint idxPlus[]; };
-layout(binding = 4) readonly buffer IdxMinus { uint idxMinus[]; };
+layout(binding = 1) readonly buffer Sparse { int16_t sparse[]; };
+layout(binding = 2) readonly buffer Idxs { uint idxs[]; };
 // Vector of size N * WG:
-layout(binding = 5) buffer V { UWORD_T v[]; };
+layout(binding = 3) buffer V { UWORD_T v[]; };
 // Vector of identical values (1 per workgroup) indicating iteration count
-layout(binding = 6) coherent buffer Iter { uint iter[]; };
+layout(binding = 4) coherent buffer Iter { uint iter[]; };
 // Output mask for Wiedemann algorithm sequence.
-layout(binding = 7) coherent buffer Wsel { uint8_t wsel[]; };
+layout(binding = 5) coherent buffer Wsel { uint8_t wsel[]; };
 // Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
 // wsel[idx]=1)
-layout(binding = 8) coherent buffer Wout { uint64_t wout[]; };
-layout(binding = 9) readonly buffer Moduli { UWORD_T moduli[]; };
+layout(binding = 6) coherent buffer Wout { uint64_t wout[]; };
+layout(binding = 7) readonly buffer Moduli { UWORD_T moduli[]; };
 
 shared UWORD_T vin[N];
 
@@ -64,8 +69,7 @@ void main() {
   uint vbase = gl_WorkGroupID.x * N;
   UWORD_T p = moduli[midx];
 
-  // for (uint batch = 0; batch < BATCHSIZE; batch++) {
-  //  Copy input vector to shared memory.
+  // Copy input vector to shared memory.
   for (uint i = 0; i < N; i += gl_WorkGroupSize.x) {
     if (i + tidx < N)
       vin[i + tidx] = v[vbase + i + tidx];
@@ -76,28 +80,66 @@ void main() {
   memoryBarrierShared();
 
   WORD_T accs[N / gl_WorkGroupSize.x + 1];
+  [[dont_unroll]]
   for (uint iter = 0; iter < BATCHSIZE; iter++) {
+    [[dont_unroll]]
     for (uint b = 0; b < accs.length(); b++) {
       const uint row = b * gl_WorkGroupSize.x + tidx;
-      if (row >= N)
-        break;
       WORD_T acc = 0;
       // Dense block
       uint dense_base = row * DENSE_N;
+#if HAS_SHUFFLE
+      // WARNING: we need all subgroup invocations to be active
+      // when loading vin and calling subgroupShuffle.
+      // Load several vin values in a single VGPR
+      for (uint i = 0; i < DENSE_N; i += gl_SubgroupSize) {
+        UWORD_T vins = vin[gl_SubgroupInvocationID];
+        subgroupMemoryBarrierShared();
+        [[unroll]]
+        for (uint j = 0; j < gl_SubgroupSize; j += 4) {
+          i8vec4 dij = i8vec4(0);
+          if (row < N)
+            dij = i8vec4(
+                dense[dense_base + i + j], dense[dense_base + i + j + 1],
+                dense[dense_base + i + j + 2], dense[dense_base + i + j + 3]);
+          for (uint k = 0; k < 4; k++) {
+            const UWORD_T vj = subgroupShuffle(vins, j + k);
+            if (i + j + k < DENSE_N) {
+              acc += WORD_T(dense[dense_base + i + j + k]) * WORD_T(vj);
+            }
+          }
+        }
+      }
+#else
       for (uint i = 0; i < DENSE_N; i++) {
         acc += WORD_T(dense[dense_base + i]) * WORD_T(vin[i]);
       }
+#endif
+      if (row >= N)
+        break;
+
       // +1 coefficients
-      uint plus0 = idxPlus[row];
-      uint plus1 = idxPlus[row + 1];
-      for (uint i = plus0; i < plus1; i++) {
-        acc += WORD_T(vin[plus[i]]);
+      const uint idx0 = idxs[row];
+      const uint idx1 = idxs[row + 1];
+      uint i = idx0;
+      while (i + 4 <= idx1) {
+        const i16vec4 col =
+            i16vec4(sparse[i], sparse[i + 1], sparse[i + 2], sparse[i + 3]);
+        const UWORD_T v0 = vin[abs(col.x)];
+        const UWORD_T v1 = vin[abs(col.y)];
+        const UWORD_T v2 = vin[abs(col.z)];
+        const UWORD_T v3 = vin[abs(col.w)];
+        acc += (col.x < 0) ? -WORD_T(v0) : WORD_T(v0);
+        acc += (col.y < 0) ? -WORD_T(v1) : WORD_T(v1);
+        acc += (col.z < 0) ? -WORD_T(v2) : WORD_T(v2);
+        acc += (col.w < 0) ? -WORD_T(v3) : WORD_T(v3);
+        i += 4;
       }
-      // -1 coefficients
-      uint minus0 = idxMinus[row];
-      uint minus1 = idxMinus[row + 1];
-      for (uint i = minus0; i < minus1; i++) {
-        acc -= WORD_T(vin[minus[i]]);
+      while (i < idx1) {
+        const int16_t col = sparse[i];
+        const UWORD_T v = vin[abs(col)];
+        acc += (col < 0) ? -WORD_T(v) : WORD_T(v);
+        i++;
       }
       // Output result to next row
       acc %= WORD_T(p);
