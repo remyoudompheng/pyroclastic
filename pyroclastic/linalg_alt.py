@@ -528,5 +528,6 @@ def main():
     logging.info("Running BlockCOO with 8 moduli (64-bit)")
     Mat2.wiedemann_multi(moduli64[:8], check=CHECK)
 
+
 if __name__ == "__main__":
     main()

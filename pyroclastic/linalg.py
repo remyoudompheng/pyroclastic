@@ -26,16 +26,19 @@ D = 360 bits => dim 25000
 D = 400 bits => dim 50000
 """
 
+import itertools
 import logging
 import math
 import pathlib
 import random
 import time
+from multiprocessing import Pool, Semaphore, current_process
 
 import flint
 import kp
 import numpy as np
 
+from . import algebra
 from . import gpu
 from . import relations
 import pyroclastic_flint_extras as flint_extras
@@ -63,12 +66,8 @@ def to_sparse_matrix(rels):
         sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
     ) / float(len(rels))
     logging.info(f"Sparse block has avg weight {sparse_weight:.1f} per row")
-    norm_plus = max(
-        sum(abs(e) for p, e in r.items() if e > 0) for r in rels
-    )
-    norm_minus = max(
-        sum(abs(e) for p, e in r.items() if e < 0) for r in rels
-    )
+    norm_plus = max(sum(abs(e) for p, e in r.items() if e > 0) for r in rels)
+    norm_minus = max(sum(abs(e) for p, e in r.items() if e < 0) for r in rels)
 
     for r in rels:
         for p in dense_p:
@@ -85,12 +84,12 @@ def to_sparse_matrix(rels):
     primes = dense_p + sorted(p for p in stats if p not in dense_set)
     dim = len(primes)
     assert dim == len(rels)
-    col_density = np.array([stats[p] / len(rels) for p in primes])
-    with np.printoptions(precision=5):
-        print("Column densities (dense)")
-        print(col_density[: len(dense_p)])
-        print("Column densities (sparse)")
-        print(col_density[len(dense_p) : dim // 3], "...", col_density[2 * dim // 3 :])
+    # col_density = np.array([stats[p] / len(rels) for p in primes])
+    # with np.printoptions(precision=5):
+    #    print("Column densities (dense)")
+    #    print(col_density[: len(dense_p)])
+    #    print("Column densities (sparse)")
+    #    print(col_density[len(dense_p) : dim // 3], "...", col_density[2 * dim // 3 :])
 
     prime_idx = {p: idx for idx, p in enumerate(primes)}
     plus = []
@@ -167,10 +166,10 @@ class CSRMatrix:
         self.flops = 2 * dim * dense_n + sparsesize
         self.weight = weight
         logging.debug(
-            f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
+            f"{self.flops} FLOPS per matrix multiplication (original weight {weight:.1f})"
         )
 
-    def wiedemann_multi(self, ls: list[int], check=False):
+    def wiedemann_multi(self, ls: list[int], check=False, lock=None):
         "Perform Wiedemann algorithm for multiple small moduli"
         MODULI = len(ls)
         if any(l.bit_length() > 32 for l in ls):
@@ -232,34 +231,34 @@ class CSRMatrix:
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
-        for i in range(0, ITERS, BATCHSIZE):
-            # Matrix multiplication is very fast so we launch multiple
-            # iterations per batch.
-            seq = mgr.sequence(total_timestamps=2 * BATCHSIZE)
-            seq.record(kp.OpAlgoDispatch(algo))
-            seq.eval()
+        with lock or Semaphore(1):
+            for i in range(0, ITERS, BATCHSIZE):
+                # Matrix multiplication is very fast so we launch multiple
+                # iterations per batch.
+                seq = mgr.sequence(total_timestamps=2 * BATCHSIZE)
+                seq.record(kp.OpAlgoDispatch(algo))
+                seq.eval()
 
-            stamps = seq.get_timestamps()
-            gpu_ticks += stamps[-1] - stamps[0]
+                stamps = seq.get_timestamps()
+                gpu_ticks += stamps[-1] - stamps[0]
 
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
         vout = xout.data().view(np.uint64).reshape((ITERS, MODULI))
 
-        dt = time.monotonic() - t0
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
-        flops = self.flops * ITERS * MODULI / dt
-        flops2 = self.weight * ITERS * MODULI / dt
-        logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {flops2/1e9:.2f} GOPS)"
-        )
+        flops = self.flops * ITERS * MODULI / gpu_dt
+        speed = ITERS * MODULI / gpu_dt
 
-        polys = []
+        dets = []
         for i, li in enumerate(ls):
             sequence = [int(x) % li for x in vout[:, i]]
 
             poly = flint_extras.berlekamp_massey(sequence, li)
             assert len(poly) <= dim + 1, len(poly)
-            polys.append(poly)
+            # polys.append(poly)
+            assert len(poly) == dim + 1
+            det = -poly[0] * pow(poly[dim], -1, li) % li
+            dets.append(det)
             if check:
                 assert check_wiedemann(sequence, poly, li)
                 assert len(poly) == dim + 1
@@ -269,7 +268,11 @@ class CSRMatrix:
                         f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
                     )
 
-        return polys
+        dt = time.monotonic() - t0
+        logging.info(
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+        )
+        return dets, ls
 
 
 class BlockCOO:
@@ -331,7 +334,7 @@ class BlockCOO:
         self.flops = 2 * dim * dense_n + len(idx_plus) + len(idx_minus)
         self.weight = weight
         logging.debug(
-            f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
+            f"{self.flops} FLOPS per matrix multiplication (original weight {weight:.1})"
         )
 
     def wiedemann_multi(self, ls: list[int], check=False):
@@ -423,19 +426,17 @@ class BlockCOO:
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
         vout = xout.data().view(np.uint64).reshape((MODULI, ITERS))
 
-        dt = time.monotonic() - t0
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
-        flops = self.flops * ITERS * MODULI / dt
-        flops2 = self.weight * ITERS * MODULI / dt
-        logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {flops2/1e9:.2f} GOPS)"
-        )
+        flops = self.flops * ITERS * MODULI / gpu_dt
+        flops2 = self.weight * ITERS * MODULI / gpu_dt
 
-        polys = []
+        dets = []
         for i, li in enumerate(ls):
             sequence = [int(x) % li for x in vout[i, :]]
             poly = flint_extras.berlekamp_massey(sequence, li)
-            polys.append(poly)
+            assert len(poly) == dim + 1
+            det = -poly[0] * pow(poly[dim], -1, li) % li
+            dets.append(det)
             if check:
                 assert check_wiedemann(sequence, poly, li)
                 assert len(poly) == dim + 1
@@ -445,14 +446,82 @@ class BlockCOO:
                         f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
                     )
 
-        return polys
+        dt = time.monotonic() - t0
+        logging.info(
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {flops2/1e9:.2f} GOPS)"
+        )
+        return dets, ls
+
+
+def update_crt(bigres, bigmod, res, mod):
+    def product(l: list[int]):
+        p = l[0]
+        for x in l[1:]:
+            p *= x
+        return p
+
+    M = product(mod)
+    crt = sum(ri * pow(M // mi, -1, mi) * (M // mi) for ri, mi in zip(res, mod))
+    crt = crt % M
+
+    MM = bigmod * M
+    z = crt * pow(bigmod, -1, M) * bigmod + bigres * pow(M, -1, bigmod) * M
+    assert z % bigmod == bigres % bigmod
+    assert all(z % mi == ri for ri, mi in zip(res, mod))
+    z = z % MM
+    if z > MM // 2:
+        z -= MM
+    return z, MM
+
+
+WORKER_M = None
+
+GPU_LOCK = None
+
+
+def worker_init(*initargs):
+    global WORKER_M
+    WORKER_M = CSRMatrix(*initargs)
+
+
+def worker_task(moduli):
+    return WORKER_M.wiedemann_multi(moduli, check=False, lock=GPU_LOCK)
+
+
+def detz(subrels):
+    t0 = time.monotonic()
+
+    weight = sum(len(r) for r in subrels)
+    basis, dense, plus, minus, norm = to_sparse_matrix(subrels)
+
+    max_mod32 = (2**31) // norm
+    moduli = [
+        x for x in range(max_mod32 - 2**20, max_mod32) if flint.fmpz(x).is_prime()
+    ]
+    logging.debug(f"Prepared {len(moduli)} small prime moduli for determinant")
+
+    margs = (dense, plus, minus, basis, weight)
+    detmod, mod = 0, 1
+    done = 0
+    global GPU_LOCK
+    GPU_LOCK = Semaphore(1)
+    with Pool(2, initializer=worker_init, initargs=margs) as mat_pool:
+        for dets, mods in mat_pool.imap_unordered(
+            worker_task, itertools.batched(moduli, 64)
+        ):
+            detmod, mod = update_crt(detmod, mod, dets, mods)
+            dt = time.monotonic() - t0
+            done += len(mods)
+            logging.info(f"Computed determinants for {done} moduli in {dt:.3f}s")
+            if detmod.bit_length() + 128 < mod.bit_length():
+                logging.info(f"Found determinant (size {detmod.bit_length()} bits)")
+                return detmod
 
 
 def main():
     import argparse
+    import json
     import os
-
-    from .linalg_alt import SpMV
 
     p = argparse.ArgumentParser()
     p.add_argument("DATADIR")
@@ -462,6 +531,12 @@ def main():
 
     rels = []
     datadir = pathlib.Path(args.DATADIR)
+
+    with open(datadir / "args.json") as j:
+        clsargs = json.load(j)
+    D = clsargs["d"]
+    logging.info(f"D = {D}")
+
     if (datadir / "relations.filtered").is_file():
         with open(datadir / "relations.filtered") as f:
             for l in f:
@@ -486,6 +561,40 @@ def main():
         filtered = relations.step_filter(pruned, pathlib.Path(args.DATADIR))
         rels = filtered
 
+    # bench(rels)
+
+    basis1 = sorted(set(p for r in rels for p, e in r.items() if e))
+    dim = len(basis1)
+    if dim >= gpu.max_shmem() // 4:
+        raise MemoryError("Matrix is too large")
+
+    bigdets = []
+    for _ in range(2):
+        print(f"Truncating to square matrix (dim {dim})")
+        while True:
+            subrels = random.sample(rels, dim)
+            if len(basis1) == len(set(p for r in subrels for p, e in r.items() if e)):
+                break
+
+        bigdets.append(detz(subrels))
+
+    d1, d2 = bigdets
+    d = int(flint.fmpz(d1).gcd(flint.fmpz(d2)))
+    logging.info(f"Multiple of group order {d}")
+
+    # Compute at precision 0.01-0.001
+    h_app = algebra.h_approx(D, 100 * D.bit_length() ** 2)
+    logging.info(f"Using approximate class number {h_app}")
+    k1 = max(1, int(math.floor(d / h_app * 0.95)) - 10)
+    k2 = int(math.ceil(d / h_app * 1.05)) + 10
+    for k in range(k1, k2):
+        if d % k == 0 and 0.8 < d / k / h_app < 1.2:
+            print("Possible class number", d // k)
+
+
+def bench(rels):
+    from .linalg_alt import SpMV
+
     basis1 = sorted(set(p for r in rels for p, e in r.items() if e))
     dim = len(basis1)
     print(f"Truncating to square matrix (dim {dim})")
@@ -503,7 +612,7 @@ def main():
     max_mod64 = (2**63) // norm
     modratio = math.log2(max_mod64) / math.log2(max_mod32)
     logging.info(
-            f"Matrix has norm {norm} max modulus32 {max_mod32} max64 {max_mod64} ratio {modratio:.2f}"
+        f"Matrix has norm {norm} max modulus32 {max_mod32} max64 {max_mod64} ratio {modratio:.2f}"
     )
 
     # print("Dense block")
@@ -515,7 +624,9 @@ def main():
 
     CHECK = True
 
-    moduli = [x for x in range(max_mod32 - 10000, max_mod32) if flint.fmpz(x).is_prime()]
+    moduli = [
+        x for x in range(max_mod32 - 10000, max_mod32) if flint.fmpz(x).is_prime()
+    ]
 
     logging.info("Running with 16 moduli (old kernel)")
     Mat = SpMV(dense, plus, minus, basis, weight)
@@ -558,6 +669,7 @@ def main():
     Mat2.wiedemann_multi(moduli64[:128], check=CHECK)
     logging.info("Running BlockCOO v2 with 256 moduli64")
     Mat2.wiedemann_multi(moduli64[:256], check=CHECK)
+
 
 if __name__ == "__main__":
     main()

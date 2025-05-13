@@ -285,7 +285,8 @@ def step_filter(rels, datadir: pathlib.Path):
         avgw = sum(len(r) for r in remaining) / nr
 
         def score_sparse(rel, stats):
-            return len(rel) + sum(1 for l in rel if len(stats[l]) < 2 * d)
+            t = max(2 * d, nr // 10)
+            return sum(1 for l in rel if len(stats[l]) < t)
 
         stop = avgw > dense_limit
         # Remove most annoying relations
@@ -313,13 +314,19 @@ def step_filter(rels, datadir: pathlib.Path):
                     delstat(ridx, rels[ridx])
                     rels[ridx] = None
 
-    # For the last step, we just want to minimize length.
+    # For the last step, we just want to minimize sparse weight
+    # We ignore dense columns when scoring
+    nr = len([_r for _r in rels if _r is not None])
+    dense = set([p for p, _rels in stats.items() if len(_rels) > nr // 3])
+    logging.debug(f"Ignoring {len(dense)} dense columns to eliminate worst rows")
+
+    def score_final(r):
+        return sum(abs(e) for p, e in r.items() if p not in dense)
+
     if excess > MIN_EXCESS:
         # scores = [(len(r), ridx) for ridx, r in enumerate(rels) if r is not None]
         scores = [
-            (sum(abs(e) for e in r.values()), ridx)
-            for ridx, r in enumerate(rels)
-            if r is not None
+            (score_final(r), ridx) for ridx, r in enumerate(rels) if r is not None
         ]
         scores.sort()
         to_remove = excess - MIN_EXCESS
@@ -382,7 +389,7 @@ def main():
         logging.info(f"Imported {len(rels)} relations")
         pruned, _ = prune2(rels, 0, 0)
 
-        #for r in pruned:
+        # for r in pruned:
         #    print(r)
 
         step_filter(pruned, pathlib.Path(args.DATADIR))

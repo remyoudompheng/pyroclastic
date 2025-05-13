@@ -6,9 +6,6 @@
 // and register file can hold entire output vector MV
 // (register file is always larger than shared memory).
 //
-// A RDNA CU can use 64kB of shared memory and 64kB of vector registers
-// (max size 8k uint64 or 16k uint32).
-//
 // The following RAM ops are needed for each matrix-vector product
 // - read input vector
 // - read matrix once
