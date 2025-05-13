@@ -156,11 +156,8 @@ class SpMV:
 
         dt = time.monotonic() - t0
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
-        flops = self.flops * ITERS / dt
-        flops2 = self.weight * ITERS / dt
-        logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {flops2/1e9:.2f} GOPS)"
-        )
+        flops = self.flops * ITERS / gpu_dt
+        speed = ITERS / gpu_dt
 
         poly = flint_extras.berlekamp_massey(sequence, l)
         if check:
@@ -168,6 +165,12 @@ class SpMV:
             assert len(poly) == dim + 1, len(poly)
             det = -poly[0] * pow(poly[dim], -1, l) % l
             logging.info(f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det}")
+
+        dt = time.monotonic() - t0
+        logging.info(
+                f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+        )
+
         return poly
 
     def wiedemann_multi(self, ls: list[int], check=False):
@@ -249,11 +252,8 @@ class SpMV:
 
         dt = time.monotonic() - t0
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
-        flops = self.flops * ITERS * MODULI / dt
-        flops2 = self.weight * ITERS * MODULI / dt
-        logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {flops2/1e9:.2f} GOPS)"
-        )
+        flops = self.flops * ITERS * MODULI / gpu_dt
+        speed = ITERS * MODULI / gpu_dt
 
         polys = []
         for i, li in enumerate(ls):
@@ -268,6 +268,10 @@ class SpMV:
                 det = -poly[0] * pow(poly[dim], -1, li) % li
                 logging.info(f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}")
 
+        dt = time.monotonic() - t0
+        logging.info(
+                f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s"
+        )
         return polys
 
 
@@ -418,13 +422,9 @@ class BlockCOO:
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
         vout = xout.data().view(np.uint64).reshape((ITERS, MODULI))
 
-        dt = time.monotonic() - t0
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
-        flops = self.flops * ITERS * MODULI / dt
-        flops2 = self.weight * ITERS * MODULI / dt
-        logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {flops2/1e9:.2f} GOPS)"
-        )
+        flops = self.flops * ITERS * MODULI / gpu_dt
+        speed = ITERS * MODULI / gpu_dt
 
         polys = []
         for i, li in enumerate(ls):
@@ -437,6 +437,10 @@ class BlockCOO:
                 det = -poly[0] * pow(poly[dim], -1, li) % li
                 logging.info(f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}")
 
+        dt = time.monotonic() - t0
+        logging.info(
+                f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s"
+        )
         return polys
 
 

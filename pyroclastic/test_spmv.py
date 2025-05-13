@@ -221,7 +221,7 @@ def main():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus = linalg.to_sparse_matrix(result)
+    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(result)
     assert sorted(basis2) == basis
     print("Dense block")
     print(dense)
@@ -241,6 +241,14 @@ def main():
 
     assert np.all(mv1 == mv3)
 
+    m4 = linalg.CSRMatrix(dense, plus, minus, basis2, weight)
+    mv4 = m4.matmul_small(65537, v2)
+    print(mv4)
+    assert np.all(mv1 == mv4)
+
+    mv5 = m4.matmul_medium(65537, v2)
+    print(mv5)
+    assert np.all(mv1 == mv5)
 
 if __name__ == "__main__":
     main()

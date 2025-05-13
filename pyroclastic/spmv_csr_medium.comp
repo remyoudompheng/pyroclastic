@@ -1,0 +1,172 @@
+// Sparse Matrix vector multiplication for medium sizes
+//
+// This shader uses 1 threadgroup per modulus, assuming
+// that the entire output vector can fit in register file
+// (usually larger than shared memory).
+//
+// The matrix uses the same input format as spmv_small.
+//
+// Columns are split into chunks such that:
+// - input vector chunk is fully loaded in shared memory
+// - rows accumulate into vector registers
+//
+// The following RAM ops are needed for each matrix-vector product:
+// - read input vector (once, chunk by chunk)
+// - read matrix once
+// - write output vector (once, at end of computation)
+//
+// On RDNA architecture, the register file for 1 CU can hold 256kB
+// (65536 uint or 32768 uint64)
+
+#version 450
+
+#ifndef N
+#error Matrix dimension undefined
+#endif
+
+#ifndef DENSE_N
+#error Dense width undefined
+#endif
+
+#ifndef CHUNK_N
+#error Row chunk size undefined
+#endif
+
+#ifdef INT64
+#define WORD_T int64_t
+#define UWORD_T uint64_t
+#else
+#define WORD_T int
+#define UWORD_T uint
+#endif
+
+#define HAS_SHUFFLE 0
+
+#extension GL_EXT_control_flow_attributes2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_atomic_int64 : require
+#if HAS_SHUFFLE
+#extension GL_KHR_shader_subgroup_shuffle : require
+#ifdef INT64
+#extension GL_EXT_shader_subgroup_extended_types_int64 : require
+#endif
+#endif
+
+// Each thread handles a row.
+layout(local_size_x = 1024, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
+layout(binding = 1) readonly buffer Sparse { int16_t sparse[]; };
+layout(binding = 2) readonly buffer Idxs { uint idxs[]; };
+// Vector of size N * WG:
+layout(binding = 3) buffer V { UWORD_T v[]; };
+// Vector of identical values (1 per workgroup) indicating iteration count
+layout(binding = 4) coherent buffer Iter { uint iter[]; };
+// Output mask for Wiedemann algorithm sequence.
+layout(binding = 5) coherent buffer Wsel { uint8_t wsel[]; };
+// Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
+// wsel[idx]=1)
+layout(binding = 6) coherent buffer Wout { uint64_t wout[]; };
+layout(binding = 7) readonly buffer Moduli { UWORD_T moduli[]; };
+
+shared UWORD_T vin[CHUNK_N];
+
+void main() {
+  uint midx = gl_WorkGroupID.x;
+  uint tidx = gl_LocalInvocationID.x;
+  uint vbase = gl_WorkGroupID.x * N;
+  UWORD_T p = moduli[midx];
+
+  uint witer = iter[gl_WorkGroupID.x];
+
+  WORD_T accs[N / gl_WorkGroupSize.x + 1];
+  uint8_t sparse_iter[accs.length()];
+  for (uint i = 0; i < accs.length(); i++) {
+    accs[i] = 0;
+    sparse_iter[i] = uint8_t(0);
+  }
+  for (uint chunk_start = 0; chunk_start < N; chunk_start += CHUNK_N) {
+    barrier();
+    memoryBarrierShared();
+    // Copy input vector to shared memory.
+    for (uint i = 0; i < CHUNK_N; i += gl_WorkGroupSize.x) {
+      if (chunk_start + i + tidx >= N || i + tidx >= CHUNK_N) break;
+      vin[i + tidx] = v[vbase + chunk_start + i + tidx];
+    }
+    barrier();
+    memoryBarrierShared();
+
+    // Compute all rows for this chunk. The first chunk includes the dense
+    // block.
+    [[dont_unroll]]
+    for (uint b = 0; b < accs.length(); b++) {
+      const uint row = b * gl_WorkGroupSize.x + tidx;
+      WORD_T acc = accs[b];
+      if (chunk_start == 0) {
+        // Dense block
+        uint dense_base = (row >= N ? 0 : row) * DENSE_N;
+#if HAS_SHUFFLE
+        // WARNING: we need all subgroup invocations to be active
+        // when loading vin and calling subgroupShuffle.
+        // Load several vin values in a single VGPR
+        for (uint i = 0; i < DENSE_N; i += gl_SubgroupSize) {
+          UWORD_T vins = vin[gl_SubgroupInvocationID];
+          subgroupMemoryBarrierShared();
+          [[unroll]]
+          for (uint j = 0; j < gl_SubgroupSize; j += 4) {
+            i8vec4 dij = i8vec4(0);
+            if (row < N)
+              dij = i8vec4(
+                  dense[dense_base + i + j], dense[dense_base + i + j + 1],
+                  dense[dense_base + i + j + 2], dense[dense_base + i + j + 3]);
+            for (uint k = 0; k < 4; k++) {
+              const UWORD_T vj = subgroupShuffle(vins, j + k);
+              if (i + j + k < DENSE_N) {
+                acc += WORD_T(dense[dense_base + i + j + k]) * WORD_T(vj);
+              }
+            }
+          }
+        }
+#else
+        for (uint i = 0; i < DENSE_N; i++) {
+          acc += WORD_T(dense[dense_base + i]) * WORD_T(vin[i]);
+        }
+#endif
+      }
+      if (row >= N)
+        break;
+
+      // +1 coefficients
+      const uint idx0 = idxs[row];
+      const uint idx1 = idxs[row + 1];
+      uint i = sparse_iter[b];
+      while (i < idx1 - idx0) {
+        const int16_t scol = sparse[idx0 + i];
+        const uint16_t col = abs(scol);
+        if (col >= chunk_start + CHUNK_N)
+          break;
+        const UWORD_T v = vin[col - chunk_start];
+        acc += (scol < 0) ? -WORD_T(v) : WORD_T(v);
+        i++;
+      }
+      sparse_iter[b] = uint8_t(i);
+      accs[b] = acc;
+    } // endfor b
+  } // endfor chunks
+
+  barrier();
+  witer += 1;
+  if (gl_LocalInvocationID.x == 0)
+    iter[gl_WorkGroupID.x] = witer;
+
+  // Write back to RAM
+  for (uint b = 0; b < accs.length(); b++) {
+    const uint row = b * gl_WorkGroupSize.x + tidx;
+    if (row >= N)
+      break;
+    UWORD_T acc = accs[b] % WORD_T(p);
+    if (row % 1024 == wsel[row / 1024])
+      atomicAdd(wout[witer * moduli.length() + midx], acc);
+    v[vbase + row] = acc;
+  }
+}
