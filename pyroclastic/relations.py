@@ -5,54 +5,6 @@ import time
 from networkx import Graph, connected_components
 
 
-def prune(rels: list, B1=None):
-    rels = rels.copy()
-    SMALLP = B1 or (len(rels) // 10)
-    pruned = []
-    stats = {}
-    smalls = set()
-    for ridx, r in enumerate(rels):
-        for p in r[1:]:
-            if p < SMALLP:
-                smalls.add(p)
-                continue
-            stats.setdefault(p, []).append(ridx)
-
-    excess = len(rels) - len(stats) - len(smalls)
-    logging.info(
-        f"[prune] {len(stats)+len(smalls)} primes appear in {len(rels)} relations (excess={excess})"
-    )
-
-    def prune(ridx):
-        r = rels[ridx]
-        for p in r[1:]:
-            if p < SMALLP:
-                continue
-            sp = stats[p]
-            sp.remove(ridx)
-        rels[ridx] = None
-
-    while True:
-        singles = 0
-        for p, rs in stats.items():
-            if len(rs) == 1:
-                prune(rs[0])
-                singles += 1
-        if singles:
-            logging.info(f"[prune] pruned {singles} singletons")
-        else:
-            break
-
-    rels = [_r for _r in rels if _r is not None]
-    for p in list(stats):
-        if len(stats[p]) == 0:
-            stats.pop(p)
-    logging.info(f"[prune] {len(stats)+len(smalls)} primes in {len(rels)} relations")
-    if len(rels) == 0:
-        return rels, None
-    return rels, len(rels) - len(stats) - len(smalls)
-
-
 def prune2(rawrels: list, B1: int, pbase: int):
     """
     Variant with both singleton and clique removal.

@@ -597,7 +597,7 @@ def main():
 
         for dt, nreports, rows in sieve_pool.imap_unordered(worker_task, As):
             for row in rows:
-                all_primes.update(row[1:])
+                all_primes.update(abs(_p) for _p in row)
                 print(" ".join(str(_x) for _x in row), file=w)
                 results.append(row)
 
