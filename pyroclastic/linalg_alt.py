@@ -168,7 +168,7 @@ class SpMV:
 
         dt = time.monotonic() - t0
         logging.info(
-                f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+                f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
 
         return poly
@@ -270,7 +270,7 @@ class SpMV:
 
         dt = time.monotonic() - t0
         logging.info(
-                f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s"
+                f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return polys
 
@@ -291,6 +291,7 @@ class BlockCOO:
 
         aplus, aminus = [], []
         idx_plus, idx_minus = [], []
+        # Enough to fit 8x u64 or 16x u32 moduli
         if dim < 10000:
             BM = 1024
         else:
@@ -345,9 +346,11 @@ class BlockCOO:
         if ls[0].bit_length() > 32:
             INT64 = True
             word_t = np.uint64
+            assert self.BM * len(ls) * 8 <= 65536
         else:
             INT64 = False
             word_t = np.uint32
+            assert self.BM * len(ls) * 4 <= 65536
 
         mgr = self.mgr
         dim = self.dim
@@ -439,9 +442,187 @@ class BlockCOO:
 
         dt = time.monotonic() - t0
         logging.info(
-                f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s"
+                f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return polys
+
+class BlockCOOv2:
+    def __init__(self, dense, plus, minus, basis, weight):
+        dim, dense_n = dense.shape
+        assert (dim * dense_n) % 4 == 0
+        self.defines = {"N": dim, "DENSE_N": dense_n}
+
+        self.basis = basis
+        self.dim = dim
+
+        # Prepare tensors
+        mgr = kp.Manager(0)
+        # Kompute wants uint32, cast arrays to make it happy
+        xd = mgr.tensor_t(dense.flatten().view(np.uint32))
+
+        aplus, aminus = [], []
+        idx_plus, idx_minus = [], []
+        if dim < 10000:
+            BM = 512
+        else:
+            BM = 1024
+        self.BM = BM
+        blk_plus, blk_minus = [], []
+        assert len(plus) == dim
+        assert len(minus) == dim
+        for i in range(dim):
+            if i % BM == 0:
+                aplus.extend(sorted(blk_plus))
+                aminus.extend(sorted(blk_minus))
+                idx_plus.append(len(aplus))
+                idx_minus.append(len(aminus))
+                blk_plus, blk_minus = [], []
+            blk_plus.extend((i % BM) + BM * j for j in plus[i])
+            blk_minus.extend((i % BM) + BM * j for j in minus[i])
+        if dim % BM != 0:
+            aplus.extend(sorted(blk_plus))
+            aminus.extend(sorted(blk_minus))
+            idx_plus.append(len(aplus))
+            idx_minus.append(len(aminus))
+        assert len(aplus) == sum(len(l) for l in plus)
+        assert len(aminus) == sum(len(l) for l in minus)
+        assert len(idx_plus) == 1 + (dim + BM - 1) // BM
+        assert len(idx_minus) == 1 + (dim + BM - 1) // BM
+        print("Block sizes")
+        print([j - i for i, j in zip(idx_plus, idx_plus[1:])])
+        print([j - i for i, j in zip(idx_minus, idx_minus[1:])])
+        print("Deltas")
+        print("plus ", max(j - i for i, j in zip(aplus, aplus[16:])))
+        print("minus", max(j - i for i, j in zip(aminus, aminus[16:])))
+
+        xplus = mgr.tensor_t(np.array(aplus, dtype=np.uint32))
+        xminus = mgr.tensor_t(np.array(aminus, dtype=np.uint32))
+        xidxp = mgr.tensor_t(np.array(idx_plus, dtype=np.uint32))
+        xidxm = mgr.tensor_t(np.array(idx_minus, dtype=np.uint32))
+
+        self.mgr = mgr
+        self.tensors = [xd, xplus, xminus, xidxp, xidxm]
+        self.flops = 2 * dim * dense_n + len(idx_plus) + len(idx_minus)
+        self.weight = weight
+        logging.debug(
+            f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
+        )
+
+    def wiedemann_multi(self, ls: list[int], check=False):
+        """
+        Perform Wiedemann algorithm for multiple small moduli
+
+        Variant with 1 workgroup per modulus.
+        """
+        BM = self.BM
+        MODULI = len(ls)
+        if ls[0].bit_length() > 32:
+            INT64 = True
+            word_t = np.uint64
+        else:
+            INT64 = False
+            word_t = np.uint32
+
+        mgr = self.mgr
+        dim = self.dim
+        assert dim >= 256
+
+        if dim < 10000:
+            BATCHSIZE = 64
+        else:
+            BATCHSIZE = 16
+        ITERS = (2 * dim // BATCHSIZE + 2) * BATCHSIZE
+
+        # Tensor holding M^k V and M^(k+1) V
+        xv = mgr.tensor_t(np.zeros(dim * 2 * MODULI, dtype=word_t).view(np.uint32))
+        # Random weights S (idx such that S[idx]=1 in each workgroup)
+        N_STRIPES = (dim + BM - 1) // BM
+        N_WG = MODULI
+        sel = np.zeros(N_STRIPES // 8 * 8 + 16, dtype=np.uint8)
+        for i in range(dim // BM):
+            # always zero on last workgroup
+            sel[i] = random.randrange(min(256, BM))
+        xsel = mgr.tensor_t(sel.view(np.uint32))
+        xiter = mgr.tensor_t(np.zeros(N_WG, dtype=np.uint32))
+        # Output sequence out[k] = S M^k V
+        xout = mgr.tensor_t(np.zeros(MODULI * ITERS, dtype=np.uint64).view(np.uint32))
+        xmod = mgr.tensor_t(np.array(ls, dtype=word_t).view(np.uint32))
+
+        xd, xplus, xminus, xidxp, xidxm = self.tensors
+        defines = self.defines | {"BM": BM, "MODULI": MODULI, "ITERS": ITERS}
+        if INT64:
+            defines["INT64"] = 1
+        kernel = gpu.compile("spmv_blockcoo2.comp", defines)
+        algo = mgr.algorithm(
+            [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xsel, xout, xmod],
+            kernel,
+            workgroup=(N_WG, 1, 1),
+        )
+        (
+            mgr.sequence()
+            .record(
+                kp.OpTensorSyncDevice(
+                    [xd, xplus, xminus, xidxp, xidxm, xsel, xout, xmod]
+                )
+            )
+            .eval()
+        )
+
+        v = xv.data().view(word_t).reshape((MODULI, 2, dim))
+        for i, l in enumerate(ls):
+            v[i, 0, :] = np.random.randint(0, l, dim, dtype=word_t)
+        # Random (sparse) set of weights
+        sequence = []
+        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+
+        mat_size = 4 * (
+            xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
+        )
+        vec_size = 4 * xv.size()
+        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+
+        t0 = time.monotonic()
+        gpu_ticks = 0.0
+        for i in range(0, ITERS, BATCHSIZE):
+            # Matrix multiplication is very fast so we launch multiple
+            # iterations per batch.
+            seq = mgr.sequence(total_timestamps=2 * BATCHSIZE)
+            for _ in range(BATCHSIZE):
+                seq.record(kp.OpAlgoDispatch(algo))
+            seq.eval()
+
+            stamps = seq.get_timestamps()
+            gpu_ticks += stamps[-1] - stamps[0]
+
+        mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
+        vout = xout.data().view(np.uint64).reshape((MODULI, ITERS))
+
+        gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
+        flops = self.flops * ITERS * MODULI / gpu_dt
+        speed = ITERS * MODULI / gpu_dt
+
+        dets = []
+        for i, li in enumerate(ls):
+            sequence = [int(x) % li for x in vout[i, :]]
+            poly = flint_extras.berlekamp_massey(sequence, li)
+            assert len(poly) == dim + 1
+            det = -poly[0] * pow(poly[dim], -1, li) % li
+            dets.append(det)
+            if check:
+                assert linalg.check_wiedemann(sequence, poly, li)
+                assert len(poly) == dim + 1
+                det = -poly[0] * pow(poly[dim], -1, li) % li
+                if i < 5 or i > len(ls) - 5:
+                    logging.info(
+                        f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
+                    )
+
+        dt = time.monotonic() - t0
+        logging.info(
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+        )
+        return dets, ls
+
 
 
 def main():
@@ -489,8 +670,7 @@ def main():
             rels = subres
             break
 
-    weight = sum(len(r) for r in rels)
-    basis, dense, plus, minus = linalg.to_sparse_matrix(rels)
+    basis, dense, plus, minus, weight = linalg.to_sparse_matrix(rels)
     assert sorted(basis) == basis1
 
     # print("Dense block")
@@ -521,16 +701,39 @@ def main():
     Mat2.wiedemann_multi(moduli[:4], check=CHECK)
     logging.info("Running BlockCOO with 8 moduli")
     Mat2.wiedemann_multi(moduli[:8], check=CHECK)
-    logging.info("Running BlockCOO with 16 moduli")
-    Mat2.wiedemann_multi(moduli[:16], check=CHECK)
+    if Mat2.BM <= 1024:
+        logging.info("Running BlockCOO with 16 moduli")
+        Mat2.wiedemann_multi(moduli[:16], check=CHECK)
 
     moduli64 = [10000000000000061] + moduli
     logging.info("Running BlockCOO with 1 moduli (64-bit)")
     Mat2.wiedemann_multi(moduli64[:1], check=CHECK)
     logging.info("Running BlockCOO with 4 moduli (64-bit)")
     Mat2.wiedemann_multi(moduli64[:4], check=CHECK)
-    logging.info("Running BlockCOO with 8 moduli (64-bit)")
+    if Mat2.BM <= 1024:
+        logging.info("Running BlockCOO with 8 moduli (64-bit)")
+        Mat2.wiedemann_multi(moduli64[:8], check=CHECK)
+
+    Mat2 = BlockCOOv2(dense, plus, minus, basis, weight)
+    logging.info("Running BlockCOO v2 with 8 moduli")
+    Mat2.wiedemann_multi(moduli[:8], check=CHECK)
+    logging.info("Running BlockCOO v2 with 32 moduli")
+    Mat2.wiedemann_multi(moduli[:32], check=CHECK)
+    logging.info("Running BlockCOO v2 with 128 moduli")
+    Mat2.wiedemann_multi(moduli[:128], check=CHECK)
+    if dim < 10000:
+        logging.info("Running BlockCOO v2 with 256 moduli")
+        Mat2.wiedemann_multi(moduli[:256], check=CHECK)
+
+    logging.info("Running BlockCOO v2 with 8 moduli64")
     Mat2.wiedemann_multi(moduli64[:8], check=CHECK)
+    logging.info("Running BlockCOO v2 with 32 moduli64")
+    Mat2.wiedemann_multi(moduli64[:32], check=CHECK)
+    if dim < 10000:
+        logging.info("Running BlockCOO v2 with 128 moduli64")
+        Mat2.wiedemann_multi(moduli64[:128], check=CHECK)
+        logging.info("Running BlockCOO v2 with 256 moduli64")
+        Mat2.wiedemann_multi(moduli64[:256], check=CHECK)
 
 
 if __name__ == "__main__":

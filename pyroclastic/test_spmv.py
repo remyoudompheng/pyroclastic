@@ -246,9 +246,14 @@ def main():
     print(mv4)
     assert np.all(mv1 == mv4)
 
-    mv5 = m4.matmul_medium(65537, v2)
+    mv5 = m4.matmul_medium(65537, v2, CHUNK_N=dim * 2 // 3)
     print(mv5)
     assert np.all(mv1 == mv5)
+
+    m6 = linalg.BlockCOO(dense, plus, minus, basis, weight)
+    mv6 = m6.mulvec(65537, v2)
+    print(mv6)
+    assert np.all(mv1 == mv6)
 
 if __name__ == "__main__":
     main()

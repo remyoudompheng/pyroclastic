@@ -1,0 +1,159 @@
+// SpMV with block COO representation
+//
+// The matrix is cut into stripes of BM rows such that
+// the output accumulators (BM x MODULI) fit in local memory.
+//
+// The typical value is BM=256 and MODULI=8x32b or 4x64b (8kB shmem)
+//
+// Each stripe is stored in COO format (row % BM, col) packed as 32-bit values.
+
+#version 450
+
+#ifndef N
+#error Matrix dimension undefined
+#endif
+
+#ifndef DENSE_N
+#error Dense width undefined
+#endif
+
+#if DENSE_N > 64
+#error DENSE_N is too large
+#endif
+
+#ifndef MODULI
+#error MODULI undefined
+#endif
+
+#ifdef INT64
+#define WORD_T int64_t
+#define UWORD_T uint64_t
+#else
+#define WORD_T int
+#define UWORD_T uint
+#endif
+
+#define HAS_SHUFFLE 1
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#if HAS_SHUFFLE
+#extension GL_KHR_shader_subgroup_shuffle : require
+#ifdef INT64
+#extension GL_EXT_shader_subgroup_extended_types_int64 : require
+#endif
+#endif
+
+layout(local_size_x = BM, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
+layout(binding = 1) readonly buffer Sparse { uint sparse[]; };
+layout(binding = 2) readonly buffer Blocks { uint bidx[]; };
+// Vector of size 2N Moduli:
+// even iterations do V[N:2N] = M * V[0:N]
+// odd iterations do V[0:N] = M * V[N:2N]
+layout(binding = 3) coherent buffer V { UWORD_T v[]; };
+// Vector of identical values (1 per workgroup) indicating iteration count
+layout(binding = 4) coherent buffer Iter { uint iter[]; };
+// Output mask for Wiedemann algorithm sequence.
+layout(binding = 5) coherent buffer Wsel { uint8_t wsel[]; };
+// Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
+// wsel[idx]=1)
+layout(binding = 6) coherent buffer Wout { uint64_t wout[]; };
+layout(binding = 7) readonly buffer Moduli { UWORD_T moduli[]; };
+
+shared WORD_T acc[BM * MODULI];
+
+void main() {
+  uint stripe = gl_WorkGroupID.x;
+  uint witer = iter[gl_WorkGroupID.y * gl_NumWorkGroups.x + stripe];
+  uint j0 = gl_WorkGroupID.y * MODULI;
+  uint off0 = ((witer & 1) == 0) ? 0 : N * MODULI;
+  uint off1 = ((witer & 1) == 0) ? N * MODULI : 0;
+  off0 += gl_WorkGroupID.y * 2 * N * MODULI;
+  off1 += gl_WorkGroupID.y * 2 * N * MODULI;
+
+  uint tidx = gl_LocalInvocationID.x;
+
+  // Zero init shared memory.
+  for (uint i = 0; i < acc.length(); i += gl_WorkGroupSize.x) {
+    if (i + tidx < acc.length()) {
+      acc[i + tidx] = 0;
+    }
+  }
+
+  barrier();
+  memoryBarrierShared();
+
+  // Dense block
+  {
+    const uint dense_row = BM * stripe + tidx;
+#if HAS_SHUFFLE
+    // Preload input vector in vector registers
+    UWORD_T vins[MODULI];
+    for (uint j = 0; j < MODULI; j++)
+      vins[j] = v[off0 + MODULI * gl_SubgroupInvocationID + j];
+#endif
+    const uint dense_base = (dense_row >= N ? 0 : dense_row) * DENSE_N;
+    WORD_T dacc[MODULI];
+    for (uint j = 0; j < MODULI; j++)
+      dacc[j] = 0;
+    for (uint i = 0; i < DENSE_N; i++) {
+      int d_ki = dense[dense_base + i];
+      for (uint j = 0; j < MODULI; j++) {
+#if HAS_SHUFFLE
+        dacc[j] += d_ki * WORD_T(subgroupShuffle(vins[j], i));
+#else
+        dacc[j] += d_ki * WORD_T(v[off0 + MODULI * i + j]);
+#endif
+      }
+    }
+    if (dense_row < N) {
+      for (uint j = 0; j < MODULI; j++)
+        atomicAdd(acc[BM * j + tidx], dacc[j]);
+    }
+  }
+
+  // ±1 coefficients
+  const uint idx0 = bidx[stripe];
+  const uint idx1 = bidx[stripe + 1];
+  for (uint i = idx0; i < idx1; i += gl_WorkGroupSize.x) {
+    const uint idx = i + tidx;
+    if (idx >= idx1)
+      break;
+    // Split row,col
+    uint col = sparse[idx];
+    const uint neg = col >> 31;
+    const uint row = col % BM;
+    col = (col & 0x7fffffff) / BM;
+    for (uint j = 0; j < MODULI; j++) {
+      WORD_T val = WORD_T(v[off0 + MODULI * col + j]);
+      if (neg != 0)
+        val = -val;
+      atomicAdd(acc[BM * j + row], val);
+    }
+  }
+
+  barrier();
+  memoryBarrierShared();
+
+  // Output result to next row
+  const uint row = BM * stripe + tidx;
+  if (row < N) {
+    for (uint j = 0; j < MODULI; j++) {
+      UWORD_T vij = UWORD_T(acc[BM * j + tidx] % WORD_T(moduli[j0 + j]));
+      v[off1 + MODULI * row + j] = vij;
+    }
+  }
+
+  if (tidx == 0)
+    iter[gl_WorkGroupID.y * gl_NumWorkGroups.x + stripe] = witer + 1;
+  if (tidx == wsel[stripe]) {
+    for (uint j = 0; j < MODULI; j++) {
+      atomicAdd(wout[(gl_NumWorkGroups.y * MODULI) * witer + j0 + j],
+                acc[BM * j + tidx] % WORD_T(moduli[j0 + j]));
+    }
+  }
+}
