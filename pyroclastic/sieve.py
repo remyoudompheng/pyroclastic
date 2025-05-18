@@ -46,6 +46,8 @@ import kp
 import tqdm
 import flint
 
+import pyroclastic_flint_extras as flint_extras
+from . import algebra
 from . import gpu
 from . import relations
 
@@ -69,16 +71,6 @@ def compile(src, defines, entry="main"):
     if p.returncode:
         raise Exception(f"shader compilation failed: code {p.returncode}")
     return out
-
-
-def smallprimes(B):
-    l = np.ones(B, dtype=np.uint8)
-    l[0:2] = 0
-    for i in range(math.isqrt(B) + 1):
-        if l[i] == 0:
-            continue
-        l[i * i :: i] = 0
-    return [int(_i) for _i in l.nonzero()[0]]
 
 
 def product(l: list[int]):
@@ -170,20 +162,6 @@ def expand_polys(N: int, A: int, Bi: list[int]):
     assert polys[1][1] == sum(Bi) - 2 * Bi[1]
     assert polys[-1][1] == Bi[0] - sum(Bi[1:])
     return polys
-
-
-def primebase(N, B):
-    primes = smallprimes(B)
-    for p in primes:
-        np = flint.nmod(N, p)
-        try:
-            r = int(np.sqrt())
-            # Normalize so that r is odd
-            if r & 1 == 0:
-                r = p - r
-            yield p, r
-        except Exception:
-            pass
 
 
 def build_relation(value, idx, facs, B1=None, B2=None, NLARGE=2):
@@ -503,7 +481,7 @@ def main():
 
     primes = []
     roots = []
-    for p, k in primebase(D, B1):
+    for p, k in algebra.primebase(D, B1):
         assert (k * k - D) % p == 0
         primes.append(p)
         roots.append(k)
@@ -648,8 +626,6 @@ def main():
             print(" ".join(str(_x) for _x in row), file=wp)
 
     if args.check:
-        import pyroclastic_flint_extras as flint_extras
-
         forms = {}
 
         def ideal(p):

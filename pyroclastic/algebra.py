@@ -18,11 +18,11 @@ def smallprimes(B):
 def primebase(N, B):
     primes = smallprimes(B)
     for p in primes:
-        np = flint.nmod(N, p)
         try:
-            r = int(np.sqrt())
-            # Normalize so that r is odd
-            if r & 1 == 0:
+            # flint.nmod.sqrt is only available in python-flint 0.7.0
+            r = flint_extras.sqrtmod(N, p)
+            # Normalize so that r has the same parity as N
+            if r & 1 != N & 1:
                 r = p - r
             yield p, r
         except Exception:

@@ -69,6 +69,9 @@ cdef extern from "flint/nmod_poly.h":
     const nmod_poly_struct * nmod_berlekamp_massey_V_poly(const nmod_berlekamp_massey_t B)
     const nmod_poly_struct * nmod_berlekamp_massey_R_poly(const nmod_berlekamp_massey_t B)
 
+cdef extern from "flint/ulong_extras.h":
+    ulong n_sqrtmod(ulong a, ulong p)
+
 cdef extern from "flint/qfb.h":
     ctypedef struct qfb_struct:
         fmpz_t a
@@ -106,6 +109,14 @@ def berlekamp_massey(seq: list, p: int) -> list:
         res.append(nmod_poly_get_coeff_ui(v, i))
     nmod_berlekamp_massey_clear(B)
     return res
+
+def sqrtmod(a: int, p: int):
+    assert p < 2**64
+    a = a % p
+    r = n_sqrtmod(a, p)
+    if a != 0 and r == 0:
+        raise ValueError("no square root")
+    return r
 
 cdef class fmpz:
     cdef fmpz_t val
