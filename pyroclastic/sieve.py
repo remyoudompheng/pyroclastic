@@ -1,7 +1,7 @@
 """
 Self-initializing Quadratic Sieve for classgroup computation
 
-We assume that D=-N is a squarefree negative integer and N=3 mod 4
+We assume that D=-N or -4N where N is a squarefree positive integer
 
 The polynomials are:
   P = A x² + B x + C where B^2 - 4 A C = D = -N
@@ -144,14 +144,17 @@ def make_poly(N: int, ak: list, roots: dict) -> Tuple[int, list]:
     such that B = sum(±Bi) is a square root of N modulo A
               C = (B²-N)/4A
     """
-    assert N & 3 == 1
+    assert N & 3 in (0, 1)
+    # If N is odd, we want B0 odd and Bi even for i > 0
+    # If N is even, we want B0 even and Bi even for i > 0
+    parity = N & 1
 
     A = product(ak)
     Bi = []
     for i, ai in enumerate(ak):
         c = A // ai * (pow(A // ai, -1, ai) * roots[ai] % ai)
         # We want B0 even and Bi odd for i > 0
-        if i == 0 and c & 1 == 0:
+        if i == 0 and c & 1 != parity:
             c += A
         if i > 0 and c & 1 == 1:
             c += A
