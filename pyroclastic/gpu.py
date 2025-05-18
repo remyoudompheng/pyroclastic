@@ -23,27 +23,41 @@ def compile(src, defines, entry="main"):
     return out
 
 
-_cached_info = None
+class GPUInfo:
+    def __init__(self):
+        self.loaded = False
+
+    def load(self):
+        if self.loaded:
+            return
+        self.loaded = True
+        try:
+            self.vulkaninfo()
+            logging.info("Loaded information from vulkaninfo")
+        except Exception:
+            pass
+
+    def vulkaninfo(self):
+        out = subprocess.check_output("vulkaninfo -j -o /dev/stdout", shell=True)
+        info = json.loads(out)
+        if "VkPhysicalDeviceProperties" in info:
+            phyprops = info["VkPhysicalDeviceProperties"]
+        else:
+            props = info["capabilities"]["device"]["properties"]
+            phyprops = props["VkPhysicalDeviceProperties"]
+        self.devname = phyprops["deviceName"]
+        self.stamp_period = phyprops["limits"]["timestampPeriod"]
+        self.max_shmem = phyprops["limits"]["maxComputeSharedMemorySize"]
 
 
-def device_info():
-    global _cached_info
-    if _cached_info:
-        return _cached_info
-    out = subprocess.check_output("vulkaninfo -j -o /dev/stdout", shell=True)
-    _cached_info = json.loads(out)
-    return _cached_info
+_gpuinfo = GPUInfo()
 
 
-def stamp_period():
-    devinfo = device_info()
-    props = devinfo["capabilities"]["device"]["properties"]
-    devname = props["VkPhysicalDeviceProperties"]["deviceName"]
-    return props["VkPhysicalDeviceProperties"]["limits"]["timestampPeriod"]
+def device_name() -> str:
+    _gpuinfo.load()
+    return _gpuinfo.devname
 
 
-def max_shmem():
-    devinfo = device_info()
-    props = devinfo["capabilities"]["device"]["properties"]
-    devname = props["VkPhysicalDeviceProperties"]["deviceName"]
-    return props["VkPhysicalDeviceProperties"]["limits"]["maxComputeSharedMemorySize"]
+def stamp_period() -> int:
+    _gpuinfo.load()
+    return _gpuinfo.stamp_period

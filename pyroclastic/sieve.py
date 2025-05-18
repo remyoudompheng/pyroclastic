@@ -46,6 +46,7 @@ import kp
 import tqdm
 import flint
 
+from . import gpu
 from . import relations
 
 SEGMENT_SIZE = 16384
@@ -68,12 +69,6 @@ def compile(src, defines, entry="main"):
     if p.returncode:
         raise Exception(f"shader compilation failed: code {p.returncode}")
     return out
-
-
-def device_info():
-    out = subprocess.check_output("vulkaninfo -j -o /dev/stdout", shell=True)
-    info = json.loads(out)
-    return info
 
 
 def smallprimes(B):
@@ -351,12 +346,8 @@ class Siever:
 
         WORKCHUNK = 2 ** (AFACS - 1)
 
-        devinfo = device_info()
-        props = devinfo["capabilities"]["device"]["properties"]
-        devname = props["VkPhysicalDeviceProperties"]["deviceName"]
-        self.stampPeriod = props["VkPhysicalDeviceProperties"]["limits"][
-            "timestampPeriod"
-        ]
+        devname = gpu.device_name()
+        self.stampPeriod = gpu.stamp_period()
 
         mgr = kp.Manager(0)
         xp = mgr.tensor_t(np.array(primes, dtype=np.uint32))
@@ -494,9 +485,7 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    devinfo = device_info()
-    props = devinfo["capabilities"]["device"]["properties"]
-    devname = props["VkPhysicalDeviceProperties"]["deviceName"]
+    devname = gpu.device_name()
     logging.debug(f"Running on device {devname}")
 
     N = args.N
