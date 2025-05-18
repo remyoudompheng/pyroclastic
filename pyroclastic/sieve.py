@@ -659,25 +659,24 @@ def main():
             print(" ".join(str(_x) for _x in row), file=wp)
 
     if args.check:
-        from cypari2 import Pari
+        import pyroclastic_flint_extras as flint_extras
 
-        pari = Pari()
         forms = {}
 
         def ideal(p):
             if p not in forms:
-                forms[p] = pari.qfbprimeform(D, p)
+                forms[p] = flint_extras.qfb.prime_form(D, p)
             return forms[p]
 
         for _row in tqdm.tqdm(results):
             q = ideal(1)
             for p in _row:
                 if p > 0:
-                    q = pari.qfbcomp(q, ideal(p))
+                    q = q * ideal(p)
                 else:
-                    q = pari.qfbcomp(q, pari.qfbpow(ideal(-p), -1))
+                    q = q * ideal(-p) ** -1
             # q must be the unit form
-            assert q[0] == 1, (_row, q)
+            assert q.q()[0] == 1, (_row, q)
 
     for _row in results[:16]:
         print(_row)
