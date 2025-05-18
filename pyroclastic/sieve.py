@@ -55,24 +55,6 @@ SEGMENT_SIZE = 16384
 SUBSEGMENT_SIZE = 8192
 
 
-def compile(src, defines, entry="main"):
-    with importlib.resources.path(__name__, src) as srcpath:
-        defines = [f"-D{k}={v}" for k, v in defines.items()]
-        p = subprocess.Popen(
-            ["glslc", "--target-env=vulkan1.3", "-I."]
-            + defines
-            + [f"-fentry-point={entry}", "-fshader-stage=compute", srcpath, "-o-"],
-            cwd=os.path.dirname(srcpath),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
-        print(p.args)
-        out, err = p.communicate(timeout=1)
-    if p.returncode:
-        raise Exception(f"shader compilation failed: code {p.returncode}")
-    return out
-
-
 def product(l: list[int]):
     p = l[0]
     for x in l[1:]:
@@ -368,9 +350,9 @@ class Siever:
         # Send initial buffers (immutable)
         mgr.sequence().record(kp.OpTensorSyncDevice([xp, xn, xargs])).eval()
 
-        PRESHADER = compile("siqs_prepare.comp", {"BLEN": BLEN, "AFACS": AFACS})
+        PRESHADER = gpu.compile("siqs_prepare.comp", {"BLEN": BLEN, "AFACS": AFACS})
 
-        SHADER = compile(
+        SHADER = gpu.compile(
             "siqs.comp",
             {
                 "AFACS": AFACS,

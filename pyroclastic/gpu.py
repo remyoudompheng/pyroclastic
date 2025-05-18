@@ -6,7 +6,7 @@ import subprocess
 
 
 def compile(src, defines, entry="main"):
-    with importlib.resources.path(__name__, src) as srcpath:
+    with importlib.resources.path("pyroclastic", src) as srcpath:
         defines = [f"-D{k}={v}" for k, v in defines.items()]
         p = subprocess.Popen(
             ["glslc", "--target-env=vulkan1.3", "-I."]
