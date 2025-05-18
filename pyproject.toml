@@ -13,7 +13,8 @@ license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 
 dependencies = [
-  "python-flint>=0.7",
+  "python-flint==0.6 ; python_version <= '3.10'",
+  "python-flint>=0.7 ; python_version >= '3.11'",
   "kp==0.9.0",
   "tqdm>=4.0",
   "networkx>=3.2"
