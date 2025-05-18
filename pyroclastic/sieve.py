@@ -404,9 +404,9 @@ class Siever:
                 .eval()
             )
 
-        # Get GPU results
+        # Get GPU results (round to 0.5 tick if ticks are zero)
         stamps = seq.get_timestamps()
-        dt = (stamps[-1] - stamps[0]) * self.stampPeriod * 1e-9
+        dt = max(0.5, stamps[-1] - stamps[0]) * self.stampPeriod * 1e-9
 
         vout = xout.data()
         vfacs = xfacs.data()
