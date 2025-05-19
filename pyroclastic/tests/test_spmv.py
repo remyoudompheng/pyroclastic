@@ -2,8 +2,6 @@ import random
 import math
 import numpy as np
 
-from tqdm import trange
-
 from pyroclastic import algebra
 from pyroclastic import relations
 from pyroclastic import linalg
@@ -20,7 +18,7 @@ def random_relations(N: int, primes: list, size: int, dense: list):
 
     rels = []
     # Random exponents with average scale/p and random sign
-    for _ in trange(N):
+    for _ in range(N):
         rel = []
         # small primes
         for i, p in enumerate(primes):
