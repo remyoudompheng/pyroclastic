@@ -29,3 +29,7 @@ ext-modules = [{name = "pyroclastic_flint_extras", sources = ["pyroclastic/pyroc
 
 [tool.setuptools.package-data]
 pyroclastic = ["*.comp"]
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules"
+pythonpath = ["."]

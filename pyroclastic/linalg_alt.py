@@ -168,7 +168,7 @@ class SpMV:
 
         dt = time.monotonic() - t0
         logging.info(
-                f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
 
         return poly
@@ -270,13 +270,47 @@ class SpMV:
 
         dt = time.monotonic() - t0
         logging.info(
-                f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return polys
 
+    def mulvec(self, v, l: int):
+        mgr = self.mgr
+        dim = self.dim
+        WGSIZE = 128
+
+        kernel = gpu.compile("spmv.comp", self.defines)
+
+        xv = mgr.tensor_t(np.zeros(2 * dim, dtype=np.uint32))
+        xv.data()[:dim] = v
+
+        xd, xplus, xminus, xidxp, xidxm = self.tensors
+        xiter = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+        xout = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+        xmod = mgr.tensor_t(np.array([l], dtype=np.uint32))
+
+        algo = mgr.algorithm(
+            [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xout, xmod],
+            kernel,
+            workgroup=((dim + WGSIZE - 1) // WGSIZE, 1, 1),
+        )
+        (
+            mgr.sequence()
+            .record(
+                kp.OpTensorSyncDevice(
+                    [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
+                )
+            )
+            .record(kp.OpAlgoDispatch(algo))
+            .record(kp.OpTensorSyncLocal([xv]))
+            .eval()
+        )
+
+        return np.copy(xv.data()[dim:])
+
 
 class BlockCOO:
-    def __init__(self, dense, plus, minus, basis, weight):
+    def __init__(self, dense, plus, minus, basis, weight, BM=None):
         dim, dense_n = dense.shape
         assert (dim * dense_n) % 4 == 0
         self.defines = {"N": dim, "DENSE_N": dense_n}
@@ -292,10 +326,11 @@ class BlockCOO:
         aplus, aminus = [], []
         idx_plus, idx_minus = [], []
         # Enough to fit 8x u64 or 16x u32 moduli
-        if dim < 10000:
-            BM = 1024
-        else:
-            BM = 1024
+        if BM is None:
+            if dim < 10000:
+                BM = 1024
+            else:
+                BM = 1024
         self.BM = BM
         blk_plus, blk_minus = [], []
         assert len(plus) == dim
@@ -309,7 +344,7 @@ class BlockCOO:
                 blk_plus, blk_minus = [], []
             blk_plus.extend((i % BM) + BM * j for j in plus[i])
             blk_minus.extend((i % BM) + BM * j for j in minus[i])
-        if dim % BM != 0:
+        if dim % BM != 1:
             aplus.extend(sorted(blk_plus))
             aminus.extend(sorted(blk_minus))
             idx_plus.append(len(aplus))
@@ -442,9 +477,45 @@ class BlockCOO:
 
         dt = time.monotonic() - t0
         logging.info(
-                f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return polys
+
+    def mulvec(self, v, p: int):
+        defines = self.defines | {"BM": 32, "MODULI": 1}
+
+        SHADER = gpu.compile("spmv_blockcoo.comp", defines)
+
+        BM = self.BM
+        mgr = self.mgr
+        dim = self.dim
+
+        xd, xplus, xminus, xidxp, xidxm = self.tensors
+        xv = mgr.tensor_t(np.zeros(2 * dim, dtype=np.uint32))
+        xv.data()[:dim] = v
+        xiter = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+        xout = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+        xmod = mgr.tensor_t(np.array([p], dtype=np.uint32))
+
+        algo = mgr.algorithm(
+            [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xout, xmod],
+            SHADER,
+            workgroup=((dim + BM - 1) // BM, 1, 1),
+        )
+        (
+            mgr.sequence()
+            .record(
+                kp.OpTensorSyncDevice(
+                    [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
+                )
+            )
+            .record(kp.OpAlgoDispatch(algo))
+            .record(kp.OpTensorSyncLocal([xv]))
+            .eval()
+        )
+
+        return np.copy(xv.data()[dim:])
+
 
 class BlockCOOv2:
     def __init__(self, dense, plus, minus, basis, weight):
@@ -622,7 +693,6 @@ class BlockCOOv2:
             f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls
-
 
 
 def main():

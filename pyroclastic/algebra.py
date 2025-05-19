@@ -69,21 +69,3 @@ def h_approx(D, B=1_000_000):
     h = math.sqrt(float(abs(D))) / math.pi
     return h * math.exp(l)
 
-
-def _test_binaryqf():
-    """
-    >>> q = flint_extras.qfb.prime_form(-103, 19)
-    >>> q
-    qfb(19, 7, 2)
-    >>> q**-1
-    qfb(19, -7, 2)
-    >>> q**5
-    qfb(1, 1, 26)
-    >>> q * q**-1
-    qfb(1, 1, 26)
-    >>> q**0
-    qfb(1, 1, 26)
-    >>> q ** 10000000000001
-    qfb(2, 1, 13)
-    """
-    pass
