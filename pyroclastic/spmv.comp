@@ -43,12 +43,17 @@ layout(binding = 7) coherent buffer Wsel { uint8_t wsel[]; };
 layout(binding = 8) coherent buffer Wout { uint64_t wout[]; };
 layout(binding = 9) readonly buffer Moduli { uint moduli[]; };
 
+int fastmod(int x, int p, float pinv) {
+  return x - p * int(floor(float(x) * pinv));
+}
+
 void main() {
   uint idx = iter[gl_WorkGroupID.x];
   uint off0 = ((idx & 1) == 0) ? 0 : N;
   uint off1 = ((idx & 1) == 0) ? N : 0;
   uint p = moduli[0];
   int pi = int(p);
+  float pinv = 1.0/float(pi);
   uint row = gl_GlobalInvocationID.x;
   if (row >= N) return;
   int acc = 0;
@@ -57,7 +62,7 @@ void main() {
   for (uint i = 0; i < DENSE_N; i++) {
     acc += int(dense[dense_base + i]) * int(v[off0 + i]);
   }
-  acc = acc % pi;
+  acc = fastmod(acc, pi, pinv);
   // +1 coefficients
   uint plus0 = idxPlus[row];
   uint plus1 = idxPlus[row + 1];

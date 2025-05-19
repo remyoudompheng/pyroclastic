@@ -57,6 +57,11 @@ layout(binding = 9) readonly buffer Moduli { UWORD_T moduli[MODULI]; };
 
 shared WORD_T acc[BM * MODULI];
 
+WORD_T fastmod(WORD_T x, UWORD_T p) {
+  float pinv = 1.0 / float(p);
+  return x - WORD_T(p) * WORD_T(floor(float(x) * pinv));
+}
+
 void main() {
   uint stripe = gl_WorkGroupID.x;
   uint witer = iter[stripe];
@@ -89,7 +94,7 @@ void main() {
       }
     }
     for (uint j = 0; j < MODULI; j++)
-      atomicAdd(acc[BM * j + tidx], dacc[j] % WORD_T(moduli[j]));
+      atomicAdd(acc[BM * j + tidx], fastmod(dacc[j], moduli[j]));
   }
 
   // +1 coefficients
@@ -132,7 +137,7 @@ void main() {
   uint row = gl_GlobalInvocationID.x;
   if (row < N) {
     for (uint j = 0; j < MODULI; j++) {
-      UWORD_T vij = UWORD_T(acc[BM * j + tidx] % WORD_T(moduli[j]));
+      UWORD_T vij = UWORD_T(fastmod(acc[BM * j + tidx], moduli[j]));
       v[off1 + MODULI * row + j] = vij;
     }
   }
@@ -141,7 +146,8 @@ void main() {
     iter[stripe] = witer + 1;
   if (tidx == wsel[stripe]) {
     for (uint j = 0; j < MODULI; j++) {
-      atomicAdd(wout[MODULI * witer + j], acc[BM * j + tidx] % WORD_T(moduli[j]));
+      atomicAdd(wout[MODULI * witer + j],
+                fastmod(acc[BM * j + tidx], moduli[j]));
     }
   }
 }

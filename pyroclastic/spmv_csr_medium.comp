@@ -71,6 +71,12 @@ layout(binding = 7) readonly buffer Moduli { UWORD_T moduli[]; };
 
 shared UWORD_T vin[CHUNK_N];
 
+UWORD_T fastmod(WORD_T x, UWORD_T p, float pinv) {
+  x -= WORD_T(p) * WORD_T(floor(float(x) * pinv));
+  if (x < 0) x += WORD_T(p);
+  return UWORD_T(x);
+}
+
 void main() {
   uint midx = gl_WorkGroupID.x;
   uint tidx = gl_LocalInvocationID.x;
@@ -160,11 +166,12 @@ void main() {
     iter[gl_WorkGroupID.x] = witer;
 
   // Write back to RAM
+  float pinv = 1.0 / float(p);
   for (uint b = 0; b < accs.length(); b++) {
     const uint row = b * gl_WorkGroupSize.x + tidx;
     if (row >= N)
       break;
-    UWORD_T acc = accs[b] % WORD_T(p);
+    UWORD_T acc = fastmod(accs[b], p, pinv);
     if (row % 1024 == wsel[row / 1024])
       atomicAdd(wout[witer * moduli.length() + midx], acc);
     v[vbase + row] = acc;
