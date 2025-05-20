@@ -103,11 +103,11 @@ void main() {
     for (uint i = 0; i < DENSE_N; i++) {
       int d_ki = dense[dense_base + i];
       for (uint j = 0; j < MODULI; j++) {
-#if HAS_SHUFFLE
-        dacc[j] += d_ki * WORD_T(subgroupShuffle(vins[j], i));
-#else
-        dacc[j] += d_ki * WORD_T(v[off0 + MODULI * i + j]);
-#endif
+        if ((HAS_SHUFFLE == 1) && (i < gl_SubgroupSize)) {
+          dacc[j] += d_ki * WORD_T(subgroupShuffle(vins[j], i));
+        } else {
+          dacc[j] += d_ki * WORD_T(v[off0 + MODULI * i + j]);
+        }
       }
     }
     if (dense_row < N) {

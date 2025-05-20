@@ -110,7 +110,7 @@ void main() {
         // when loading vin and calling subgroupShuffle.
         // Load several vin values in a single VGPR
         for (uint i = 0; i < DENSE_N; i += gl_SubgroupSize) {
-          UWORD_T vins = vin[gl_SubgroupInvocationID];
+          UWORD_T vins = vin[i + gl_SubgroupInvocationID];
           subgroupMemoryBarrierShared();
           [[unroll]]
           for (uint j = 0; j < gl_SubgroupSize; j += 4) {
