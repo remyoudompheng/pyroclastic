@@ -142,7 +142,7 @@ cdef class qfb:
         a = int((<bytes>cstr).decode(), 16)
         free(cstr)
 
-        bstr = fmpz_get_str(NULL, 16, self.val.b)
+        cstr = fmpz_get_str(NULL, 16, self.val.b)
         b = int((<bytes>cstr).decode(), 16)
         free(cstr)
 
