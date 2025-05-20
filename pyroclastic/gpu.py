@@ -61,3 +61,8 @@ def device_name() -> str:
 def stamp_period() -> int:
     _gpuinfo.load()
     return _gpuinfo.stamp_period
+
+
+def max_shmem() -> int:
+    _gpuinfo.load()
+    return _gpuinfo.max_shmem
