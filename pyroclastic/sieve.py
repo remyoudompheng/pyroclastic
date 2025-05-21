@@ -39,7 +39,7 @@ import subprocess
 import struct
 import time
 import queue
-from multiprocessing import Pool, Semaphore
+from multiprocessing import Pool, Semaphore, current_process
 
 import numpy as np
 import kp
@@ -285,7 +285,7 @@ def get_params(N: int):
 
 
 # At most 2 GPU jobs at a time
-GPU_LOCK = Semaphore(2)
+GPU_LOCK = [Semaphore(2)]
 
 
 class Siever:
@@ -310,7 +310,11 @@ class Siever:
         devname = gpu.device_name()
         self.stampPeriod = gpu.stamp_period()
 
-        mgr = kp.Manager(0)
+        proc = current_process()
+        self.gpu_idx = proc._identity[-1] % len(GPU_LOCK)
+        mgr = kp.Manager(self.gpu_idx)
+        gpu_name = mgr.get_device_properties().get("device_name", "unknown")
+        logging.info(f"Worker {proc.name} running on GPU {self.gpu_idx} ({gpu_name})")
         xp = mgr.tensor_t(np.array(primes, dtype=np.uint32))
         xn = mgr.tensor_t(np.array(roots, dtype=np.uint32))
         nsumroots = (
@@ -395,7 +399,7 @@ class Siever:
         xout.data().fill(0)
         xfacs.data().fill(0)
 
-        with GPU_LOCK:
+        with GPU_LOCK[self.gpu_idx]:
             seq = (
                 self.mgr.sequence(total_timestamps=16)
                 .record(kp.OpTensorSyncDevice([xb, xout, xfacs, xargs]))
@@ -437,7 +441,10 @@ def main():
         "--check", action="store_true", help="Verify relations (requires cypari2)"
     )
     argp.add_argument(
-        "-j", metavar="THREADS", type=int, help="Number of parallel GPU jobs"
+        "-j", metavar="THREADS", type=int, help="Number of CPU threads (and parallel GPU jobs)"
+    )
+    argp.add_argument(
+        "--ngpu", metavar="GPUS", type=int, default=1, help="Number of GPUs (usually a divisor of THREADS)"
     )
     argp.add_argument("N", type=int)
     argp.add_argument("OUTDIR")
@@ -446,8 +453,8 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    devname = gpu.device_name()
-    logging.debug(f"Running on device {devname}")
+    while len(GPU_LOCK) < args.ngpu:
+        GPU_LOCK.append(Semaphore(2))
 
     N = args.N
     B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG, NLARGE = (
@@ -470,7 +477,7 @@ def main():
         assert (k * k - D) % p == 0
         primes.append(p)
         roots.append(k)
-    logging.debug(f"Prime base size {len(primes)} {primes[:10]} ... {primes[-1]}")
+    logging.debug(f"Prime base size {len(primes)} {primes[:10]} ... {primes[-1]}, B2={B2/1e6:.1f}M")
     logging.debug(f"Interval size {M//512}k")
 
     # A bucket contains offsets for a subsegment
