@@ -160,7 +160,7 @@ def build_relation(value, idx, facs, B1=None, B2=None, NLARGE=2):
             v //= f
     if v == 1:
         return row
-    if v > B2 ** NLARGE:
+    if v > B2**NLARGE:
         return None
     cofacs = flint.fmpz(v).factor_smooth(bits=20)
     for _p, _e in cofacs:
@@ -262,11 +262,12 @@ PARAMS2 = (
 
 # Triple large prime
 PARAMS3 = (
-    (360, 500_000, 50, 2, 55, 12, 18, 2), # too slow
+    (360, 500_000, 50, 2, 55, 12, 18, 2),  # too slow
     (380, 750_000, 50, 1, 45, 12, 12, 2),
     (400, 1000_000, 50, 1, 50, 12, 24, 2),
-    (500, 7000_000, 200, 1, 70, 12, 16, 2)
+    (500, 7000_000, 200, 1, 70, 12, 16, 2),
 )
+
 
 def get_params(N: int):
     sz = N.bit_length()
@@ -449,7 +450,9 @@ def main():
     logging.debug(f"Running on device {devname}")
 
     N = args.N
-    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG, NLARGE = get_params(N)
+    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG, NLARGE = (
+        get_params(N)
+    )
     B2 = B2k * B1
     M = ITERS * SEGMENT_SIZE // 2
 

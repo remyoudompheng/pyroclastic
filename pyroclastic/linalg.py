@@ -130,6 +130,7 @@ class CSRMatrix:
     - small variant where entire input/output fit in registers + shmem
     - medium variant where input vector in loaded in chunks
     """
+
     def __init__(self, dense, plus, minus, basis, weight):
         dim, dense_n = dense.shape
         assert (dim * dense_n) % 4 == 0
@@ -307,8 +308,8 @@ class CSRMatrix:
         (
             mgr.sequence()
             .record(kp.OpTensorSyncDevice([xd, xrows, xidx, xv, xsel, xout, xmod]))
-                .record(kp.OpAlgoDispatch(algo))
-                .record(kp.OpTensorSyncLocal([xv]))
+            .record(kp.OpAlgoDispatch(algo))
+            .record(kp.OpTensorSyncLocal([xv]))
             .eval()
         )
         return np.copy(xv.data().view(word_t))
@@ -458,12 +459,11 @@ class CSRMatrix:
         (
             mgr.sequence()
             .record(kp.OpTensorSyncDevice([xd, xrows, xidx, xv, xsel, xout, xmod]))
-                .record(kp.OpAlgoDispatch(algo))
-                .record(kp.OpTensorSyncLocal([xv]))
+            .record(kp.OpAlgoDispatch(algo))
+            .record(kp.OpTensorSyncLocal([xv]))
             .eval()
         )
         return np.copy(xv.data().view(word_t))
-
 
 
 class BlockCOO:
@@ -474,6 +474,7 @@ class BlockCOO:
 
     Each workgroup handles a block and at most 16 moduli (u32) or 8 moduli (u64)
     """
+
     def __init__(self, dense, plus, minus, basis, weight):
         dim, dense_n = dense.shape
         assert (dim * dense_n) % 4 == 0
@@ -500,22 +501,24 @@ class BlockCOO:
         block_idx = []
         for i in range(dim):
             if i % BM == 0:
-                block.sort(key=lambda x: x & 0x7fffffff)
+                block.sort(key=lambda x: x & 0x7FFFFFFF)
                 sparses.extend(block)
                 block_idx.append(len(sparses))
                 block = []
             block.extend((i % BM) + BM * j for j in plus[i])
             block.extend((i % BM) + BM * j + 2**31 for j in minus[i])
         if dim % BM != 0:
-            block.sort(key=lambda x: x & 0x7fffffff)
+            block.sort(key=lambda x: x & 0x7FFFFFFF)
             sparses.extend(block)
             block_idx.append(len(sparses))
         assert len(sparses) == sum(len(l) for l in plus + minus)
         assert len(block_idx) == 1 + (dim + BM - 1) // BM
-        logging.debug(f"Block sizes {[j - i for i, j in zip(block_idx, block_idx[1:])]}")
-        #print("Deltas")
-        #print("plus ", max(j - i for i, j in zip(aplus, aplus[16:])))
-        #print("minus", max(j - i for i, j in zip(aminus, aminus[16:])))
+        logging.debug(
+            f"Block sizes {[j - i for i, j in zip(block_idx, block_idx[1:])]}"
+        )
+        # print("Deltas")
+        # print("plus ", max(j - i for i, j in zip(aplus, aplus[16:])))
+        # print("minus", max(j - i for i, j in zip(aminus, aminus[16:])))
 
         xsparse = mgr.tensor_t(np.array(sparses, dtype=np.uint32))
         xidx = mgr.tensor_t(np.array(block_idx, dtype=np.uint32))
@@ -542,7 +545,7 @@ class BlockCOO:
 
         mgr = self.mgr
         dim = self.dim
-        #assert dim >= 256
+        # assert dim >= 256
 
         # Tensor holding M^k V and M^(k+1) V
         xv = mgr.tensor_t(np.zeros(dim * 2 * MODULI, dtype=word_t).view(np.uint32))
@@ -565,22 +568,17 @@ class BlockCOO:
             workgroup=(N_STRIPES, 1, 1),
         )
         v = xv.data().view(word_t).reshape((2, 1, dim))
-        v[0,0,:] = vi
+        v[0, 0, :] = vi
         (
             mgr.sequence()
-            .record(
-                kp.OpTensorSyncDevice(
-                    [xd, xsparse, xidx, xv, xsel, xout, xmod]
-                )
-            )
-                .record(kp.OpAlgoDispatch(algo))
-                .record(kp.OpTensorSyncLocal([xv]))
+            .record(kp.OpTensorSyncDevice([xd, xsparse, xidx, xv, xsel, xout, xmod]))
+            .record(kp.OpAlgoDispatch(algo))
+            .record(kp.OpTensorSyncLocal([xv]))
             .eval()
         )
 
         v = xv.data().view(word_t).reshape((2, 1, dim))
-        return np.copy(v[1,0,:])
-
+        return np.copy(v[1, 0, :])
 
     def wiedemann_multi(self, ls: list[int], check=False, lock=None):
         """
@@ -642,24 +640,20 @@ class BlockCOO:
         )
         (
             mgr.sequence()
-            .record(
-                kp.OpTensorSyncDevice(
-                    [xd, xsparse, xidx, xsel, xout, xmod]
-                )
-            )
+            .record(kp.OpTensorSyncDevice([xd, xsparse, xidx, xsel, xout, xmod]))
             .eval()
         )
 
         v = xv.data().view(word_t).reshape((MOD_WG, 2, dim, MODULI // MOD_WG))
         for i, l in enumerate(ls):
-            v[i // MODULI_STRIDE, 0, :, i % MODULI_STRIDE] = np.random.randint(0, l, dim, dtype=word_t)
+            v[i // MODULI_STRIDE, 0, :, i % MODULI_STRIDE] = np.random.randint(
+                0, l, dim, dtype=word_t
+            )
         # Random (sparse) set of weights
         sequence = []
         mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
 
-        mat_size = 4 * (
-            xd.size() + xsparse.size() + xidx.size()
-        )
+        mat_size = 4 * (xd.size() + xsparse.size() + xidx.size())
         vec_size = 4 * xv.size()
         logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
 
@@ -906,8 +900,8 @@ def bench(rels):
 
         logging.info("Running with 16 moduli (medium)")
         Mat1.wiedemann_medium(moduli[:16], check=False)
-        #logging.info("Running with 64 moduli (medium)")
-        #Mat1.wiedemann_medium(moduli[:64], check=False)
+        # logging.info("Running with 64 moduli (medium)")
+        # Mat1.wiedemann_medium(moduli[:64], check=False)
 
     moduli64 = [10000000000000061] + moduli
 

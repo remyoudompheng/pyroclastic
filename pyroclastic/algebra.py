@@ -68,4 +68,3 @@ def h_approx(D, B=1_000_000):
     l = np.average(lsum[-len(ps) // 4 :])
     h = math.sqrt(float(abs(D))) / math.pi
     return h * math.exp(l)
-
