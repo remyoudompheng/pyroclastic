@@ -16,6 +16,7 @@ D = 360 bits => dim 25000
 D = 400 bits => dim 50000
 """
 
+from contextlib import nullcontext
 import itertools
 import logging
 import math
@@ -131,7 +132,7 @@ class CSRMatrix:
     - medium variant where input vector in loaded in chunks
     """
 
-    def __init__(self, dense, plus, minus, basis, weight):
+    def __init__(self, dense, plus, minus, basis, weight, gpu_idx=0):
         dim, dense_n = dense.shape
         assert (dim * dense_n) % 4 == 0
         self.defines = {"N": dim, "DENSE_N": dense_n}
@@ -140,7 +141,7 @@ class CSRMatrix:
         self.dim = dim
 
         # Prepare tensors
-        mgr = kp.Manager(0)
+        mgr = kp.Manager(gpu_idx)
         xd = mgr.tensor_t(dense.flatten().view(np.uint32))
 
         # Merge back +1/-1 coefficients
@@ -231,7 +232,7 @@ class CSRMatrix:
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
-        with lock or Semaphore(1):
+        with lock or nullcontext():
             for i in range(0, ITERS, BATCHSIZE):
                 # Matrix multiplication is very fast so we launch multiple
                 # iterations per batch.
@@ -377,7 +378,7 @@ class CSRMatrix:
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
-        with lock or Semaphore(1):
+        with lock or nullcontext():
             for i in range(0, ITERS, BATCHSIZE):
                 # Matrix multiplication is very fast so we launch multiple
                 # iterations per batch.
@@ -474,7 +475,7 @@ class BlockCOO:
     Each workgroup handles a block and at most 16 moduli (u32) or 8 moduli (u64)
     """
 
-    def __init__(self, dense, plus, minus, basis, weight):
+    def __init__(self, dense, plus, minus, basis, weight, gpu_idx=0):
         dim, dense_n = dense.shape
         assert (dim * dense_n) % 4 == 0
         self.defines = {"N": dim, "DENSE_N": dense_n}
@@ -483,7 +484,7 @@ class BlockCOO:
         self.dim = dim
 
         # Prepare tensors
-        mgr = kp.Manager(0)
+        mgr = kp.Manager(gpu_idx)
         # Kompute wants uint32, cast arrays to make it happy
         xd = mgr.tensor_t(dense.flatten().view(np.uint32))
 
@@ -657,7 +658,7 @@ class BlockCOO:
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
-        with lock or Semaphore(1):
+        with lock or nullcontext():
             for i in range(0, ITERS, BATCHSIZE):
                 # Matrix multiplication is very fast so we launch multiple
                 # iterations per batch.
@@ -722,23 +723,26 @@ def update_crt(bigres, bigmod, res, mod):
 
 WORKER_M = None
 
-GPU_LOCK = None
+GPU_LOCK = [Semaphore(2)]
 
 
 def worker_init(*initargs):
     global WORKER_M
     dim = len(initargs[1])
+    proc = current_process()
+    gpu_idx = proc._identity[-1] % len(GPU_LOCK)
     if dim < gpu.max_shmem() // 4:
-        WORKER_M = CSRMatrix(*initargs)
+        WORKER_M = CSRMatrix(*initargs, gpu_idx=gpu_idx)
     else:
-        WORKER_M = BlockCOO(*initargs)
+        WORKER_M = BlockCOO(*initargs, gpu_idx=gpu_idx)
+    WORKER_M.gpu_idx = gpu_idx
 
 
 def worker_task(moduli):
-    return WORKER_M.wiedemann_multi(moduli, check=False, lock=GPU_LOCK)
+    return WORKER_M.wiedemann_multi(moduli, check=False, lock=GPU_LOCK[WORKER_M.gpu_idx])
 
 
-def detz(subrels):
+def detz(subrels, threads):
     t0 = time.monotonic()
 
     weight = sum(len(r) for r in subrels)
@@ -755,9 +759,10 @@ def detz(subrels):
     margs = (dense, plus, minus, basis, weight)
     detmod, mod = 0, 1
     done = 0
-    global GPU_LOCK
-    GPU_LOCK = Semaphore(1)
-    with Pool(2, initializer=worker_init, initargs=margs) as mat_pool:
+    # Create new locks for each pool
+    for i in range(len(GPU_LOCK)):
+        GPU_LOCK[i] = Semaphore(2)
+    with Pool(threads, initializer=worker_init, initargs=margs) as mat_pool:
         for dets, mods in mat_pool.imap_unordered(
             worker_task, itertools.batched(moduli, BATCH_SIZE)
         ):
@@ -776,11 +781,20 @@ def main():
     import os
 
     p = argparse.ArgumentParser()
+    p.add_argument(
+        "-j", metavar="THREADS", default=2, type=int, help="Number of parallel GPU jobs"
+    )
+    p.add_argument(
+        "--ngpu", metavar="GPUS", type=int, default=1, help="Number of GPUs (usually a divisor of THREADS)"
+    )
     p.add_argument("--bench", action="store_true")
     p.add_argument("DATADIR")
     args = p.parse_args()
 
     logging.getLogger().setLevel(logging.DEBUG)
+
+    while len(GPU_LOCK) < args.ngpu:
+        GPU_LOCK.append(Semaphore(2))
 
     rels = []
     datadir = pathlib.Path(args.DATADIR)
@@ -829,7 +843,7 @@ def main():
             if len(basis1) == len(set(p for r in subrels for p, e in r.items() if e)):
                 break
 
-        bigdets.append(detz(subrels))
+        bigdets.append(detz(subrels, threads=args.j))
 
     d1, d2 = bigdets
     d = int(flint.fmpz(d1).gcd(flint.fmpz(d2)))
