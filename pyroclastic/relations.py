@@ -37,9 +37,6 @@ def prune2(rawrels: list, B1: int, pbase: int):
     excess = len(rels) - len(stats) - pbase
     logging.info(f"[prune2] {len(stats) + pbase} primes appear in relations")
 
-    removed = 0
-    max_removed = (excess - 200) // 2
-
     def prune(ridx):
         r = rels[ridx]
         for p, v in r.items():
@@ -47,6 +44,8 @@ def prune2(rawrels: list, B1: int, pbase: int):
                 sp = stats[p]
                 if sp is not None:
                     sp.remove(ridx)
+                    if len(sp) == 0:
+                        del stats[p]
         rels[ridx] = None
 
     def score(clique):
@@ -61,11 +60,28 @@ def prune2(rawrels: list, B1: int, pbase: int):
                     s += 1
         return s
 
+    while excess < 0:
+        m1 = [p for p, rs in stats.items() if rs is not None and len(rs) == 1]
+        singles = 0
+        for p in m1:
+            if stats.get(p):
+                prune(stats[p][0])
+                singles += 1
+        if singles:
+            logging.info(f"[prune2] pruned {singles} singletons")
+            nr = sum(1 for r in rels if r is not None)
+            excess = nr - len(stats) - pbase
+            logging.info(f"[prune2] {len(stats) + pbase} primes appear in relations")
+        else:
+            break
+
+    removed = 0
+    max_removed = (excess - 200) // 2
     while removed < max_removed:
         m1 = [p for p, rs in stats.items() if rs is not None and len(rs) == 1]
         singles = 0
         for p in m1:
-            if stats[p]:
+            if stats.get(p):
                 prune(stats[p][0])
                 singles += 1
         if singles:
@@ -80,8 +96,10 @@ def prune2(rawrels: list, B1: int, pbase: int):
         cliques.sort(key=score)
         to_remove = max(100, max_removed // 4)
         to_remove = min(max_removed - removed, to_remove)
-        assert to_remove > 0
-        cliques_removed = cliques[-to_remove:]
+        if to_remove > 0:
+            cliques_removed = cliques[-to_remove:]
+        else:
+            cliques_removed = []
         size = sum(len(c) for c in cliques_removed)
         if size:
             logging.info(
