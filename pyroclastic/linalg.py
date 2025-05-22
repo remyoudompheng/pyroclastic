@@ -30,6 +30,7 @@ import kp
 import numpy as np
 
 from . import algebra
+from . import linalg_alt
 from . import gpu
 from . import relations
 import pyroclastic_flint_extras as flint_extras
@@ -134,6 +135,7 @@ class CSRMatrix:
 
     def __init__(self, dense, plus, minus, basis, weight, gpu_idx=0):
         dim, dense_n = dense.shape
+        assert dim < 32768
         assert (dim * dense_n) % 4 == 0
         self.defines = {"N": dim, "DENSE_N": dense_n}
 
@@ -731,7 +733,10 @@ def worker_init(*initargs):
     dim = len(initargs[1])
     proc = current_process()
     gpu_idx = proc._identity[-1] % len(GPU_LOCK)
-    if dim < gpu.max_shmem() // 4:
+    if gpu.is_discrete_gpu() and dim < 65536:
+        # Simple CSR kernel is always faster on dGPU
+        WORKER_M = linalg_alt.SpMV(*initargs, gpu_idx=gpu_idx)
+    elif dim < gpu.max_shmem() // 4:
         WORKER_M = CSRMatrix(*initargs, gpu_idx=gpu_idx)
     else:
         WORKER_M = BlockCOO(*initargs, gpu_idx=gpu_idx)
@@ -895,9 +900,15 @@ def bench(rels):
         x for x in range(max_mod32 - 10000, max_mod32) if flint.fmpz(x).is_prime()
     ]
 
-    logging.info("Running with 16 moduli (naive kernel)")
     Mat = SpMV(dense, plus, minus, basis, weight)
+    logging.info("Running with 16 moduli (naive kernel)")
     Mat.wiedemann_multi(moduli[:16], check=CHECK)
+    logging.info("Running with 32 moduli (naive kernel)")
+    Mat.wiedemann_multi(moduli[:32], check=CHECK)
+    logging.info("Running with 64 moduli (naive kernel)")
+    Mat.wiedemann_multi(moduli[:64], check=CHECK)
+    logging.info("Running with 128 moduli (naive kernel)")
+    Mat.wiedemann_multi(moduli[:128], check=CHECK)
 
     if dim < 32768:
         # indices must fit int16
@@ -910,8 +921,9 @@ def bench(rels):
             logging.info("Running with 128 moduli (small)")
             Mat1.wiedemann_multi(moduli[:128], check=CHECK)
 
-        logging.info("Running with 16 moduli (medium)")
-        Mat1.wiedemann_medium(moduli[:16], check=False)
+        # FIXME: broken?
+        #logging.info("Running with 16 moduli (medium)")
+        #Mat1.wiedemann_medium(moduli[:16], check=False)
         # logging.info("Running with 64 moduli (medium)")
         # Mat1.wiedemann_medium(moduli[:64], check=False)
 

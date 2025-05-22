@@ -43,8 +43,9 @@ layout(binding = 7) coherent buffer Wsel { uint8_t wsel[]; };
 layout(binding = 8) coherent buffer Wout { uint64_t wout[]; };
 layout(binding = 9) readonly buffer Moduli { uint moduli[]; };
 
-int fastmod(int x, int p, float pinv) {
-  return x - p * int(floor(float(x) * pinv));
+int fastmod(int x, uint p) {
+  float pinv = 1.0 / float(p);
+  return x - int(p) * int(floor(float(x) * pinv));
 }
 
 void main() {
@@ -52,8 +53,6 @@ void main() {
   uint off0 = ((idx & 1) == 0) ? 0 : N;
   uint off1 = ((idx & 1) == 0) ? N : 0;
   uint p = moduli[0];
-  int pi = int(p);
-  float pinv = 1.0/float(pi);
   uint row = gl_GlobalInvocationID.x;
   if (row >= N) return;
   int acc = 0;
@@ -62,24 +61,20 @@ void main() {
   for (uint i = 0; i < DENSE_N; i++) {
     acc += int(dense[dense_base + i]) * int(v[off0 + i]);
   }
-  acc = fastmod(acc, pi, pinv);
   // +1 coefficients
   uint plus0 = idxPlus[row];
   uint plus1 = idxPlus[row + 1];
   for (uint i = plus0; i < plus1; i++) {
     acc += int(v[off0 + plus[i]]);
-    if (acc >= pi)
-      acc -= pi;
   }
   // -1 coefficients
   uint minus0 = idxMinus[row];
   uint minus1 = idxMinus[row + 1];
   for (uint i = minus0; i < minus1; i++) {
     acc -= int(v[off0 + minus[i]]);
-    if (acc < 0)
-      acc += pi;
   }
   // Output result to next row
+  acc = fastmod(acc, p);
   v[off1 + row] = uint(acc);
   barrier();
   if (gl_LocalInvocationID.x == 0)

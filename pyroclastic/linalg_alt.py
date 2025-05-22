@@ -24,6 +24,7 @@ D = 360 bits => dim 25000
 D = 400 bits => dim 50000
 """
 
+from contextlib import nullcontext
 import logging
 import pathlib
 import random
@@ -40,8 +41,9 @@ import pyroclastic_flint_extras as flint_extras
 
 
 class SpMV:
-    def __init__(self, dense, plus, minus, basis, weight):
+    def __init__(self, dense, plus, minus, basis, weight, gpu_idx=0):
         dim, dense_n = dense.shape
+        assert dim < 65536
         assert (dim * dense_n) % 4 == 0
         self.defines = {"N": dim, "DENSE_N": dense_n}
 
@@ -49,7 +51,7 @@ class SpMV:
         self.dim = dim
 
         # Prepare tensors
-        mgr = kp.Manager(0)
+        mgr = kp.Manager(gpu_idx)
         xd = mgr.tensor_t(dense.flatten().view(np.uint32))
 
         rowlen_plus = [len(l) for l in plus]
@@ -173,11 +175,11 @@ class SpMV:
 
         return poly
 
-    def wiedemann_multi(self, ls: list[int], check=False):
+    def wiedemann_multi(self, ls: list[int], check=False, lock=None):
         "Perform Wiedemann algorithm for multiple small moduli"
-        BATCH_ROW = 16
         MODULI = len(ls)
-        assert MODULI in (8, 16)
+        assert MODULI in (8, 16, 32, 64, 128)
+        BATCH_ROW = 512 // MODULI
 
         mgr = self.mgr
         dim = self.dim
@@ -236,16 +238,17 @@ class SpMV:
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
-        for i in range(0, ITERS, BATCHSIZE):
-            # Matrix multiplication is very fast so we launch multiple
-            # iterations per batch.
-            seq = mgr.sequence(total_timestamps=2 * BATCHSIZE)
-            for _ in range(BATCHSIZE):
-                seq.record(kp.OpAlgoDispatch(algo))
-            seq.eval()
+        with lock or nullcontext():
+            for i in range(0, ITERS, BATCHSIZE):
+                # Matrix multiplication is very fast so we launch multiple
+                # iterations per batch.
+                seq = mgr.sequence(total_timestamps=2 * BATCHSIZE)
+                for _ in range(BATCHSIZE):
+                    seq.record(kp.OpAlgoDispatch(algo))
+                seq.eval()
 
-            stamps = seq.get_timestamps()
-            gpu_ticks += stamps[-1] - stamps[0]
+                stamps = seq.get_timestamps()
+                gpu_ticks += stamps[-1] - stamps[0]
 
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
         vout = xout.data().view(np.uint64).reshape((ITERS, MODULI))
@@ -255,24 +258,26 @@ class SpMV:
         flops = self.flops * ITERS * MODULI / gpu_dt
         speed = ITERS * MODULI / gpu_dt
 
-        polys = []
+        dets = []
         for i, li in enumerate(ls):
             sequence = [int(x) % li for x in vout[:, i]]
 
             poly = flint_extras.berlekamp_massey(sequence, li)
-            assert len(poly) <= dim + 1
-            polys.append(poly)
+            assert len(poly) == dim + 1
+            det = -poly[0] * pow(poly[dim], -1, li) % li
+            dets.append(det)
             if check:
                 assert linalg.check_wiedemann(sequence, poly, li)
                 assert len(poly) == dim + 1
                 det = -poly[0] * pow(poly[dim], -1, li) % li
-                logging.info(f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}")
+                if i < 5 or i > len(ls) - 5:
+                    logging.info(f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}")
 
         dt = time.monotonic() - t0
         logging.info(
             f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
-        return polys
+        return dets, ls
 
     def mulvec(self, v, l: int):
         mgr = self.mgr
@@ -757,12 +762,14 @@ def main():
     logging.info("Running with 1 modulus")
     Mat = SpMV(dense, plus, minus, basis, weight)
     Mat.wiedemann(65537, check=CHECK)
-
-    logging.info("Running with 8 moduli")
+    logging.info("Running spmv_multi with 8 moduli")
     Mat.wiedemann_multi(moduli[:8], check=CHECK)
-
-    logging.info("Running with 16 moduli")
+    logging.info("Running spmv_multi with 16 moduli")
     Mat.wiedemann_multi(moduli[:16], check=CHECK)
+    logging.info("Running spmv_multi with 32 moduli")
+    Mat.wiedemann_multi(moduli[:32], check=CHECK)
+    logging.info("Running spmv_multi with 64 moduli")
+    Mat.wiedemann_multi(moduli[:64], check=CHECK)
 
     Mat2 = BlockCOO(dense, plus, minus, basis, weight)
     logging.info("Running BlockCOO with 1 modulus")
