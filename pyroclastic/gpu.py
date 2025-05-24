@@ -72,3 +72,13 @@ def stamp_period() -> int:
 def max_shmem() -> int:
     _gpuinfo.load()
     return _gpuinfo.max_shmem
+
+
+def has_fast_add64() -> bool:
+    """
+    Whether the devices supports fast int64 add/sub operations
+    """
+    # FIXME: test other vendors
+    # Currently only NVIDIA GPU run int64 kernels faster
+    _gpuinfo.load()
+    return "nvidia" in _gpuinfo.devname.lower()

@@ -181,6 +181,13 @@ class SpMV:
         assert MODULI in (8, 16, 32, 64, 128)
         BATCH_ROW = 512 // MODULI
 
+        if any(l.bit_length() > 32 for l in ls):
+            INT64 = True
+            word_t = np.uint64
+        else:
+            INT64 = False
+            word_t = np.uint32
+
         mgr = self.mgr
         dim = self.dim
         assert dim >= 256
@@ -191,23 +198,31 @@ class SpMV:
         ITERS = 2 * dim
         ITERS = (ITERS // BATCHSIZE + 2) * BATCHSIZE
         # Tensor holding M^k V and M^(k+1) V
-        xv = mgr.tensor_t(np.zeros(dim * 2 * MODULI, dtype=np.uint32))
+        xv = mgr.tensor_t(np.zeros(dim * 2 * MODULI, dtype=word_t).view(np.uint32))
         xiter = mgr.tensor_t(np.zeros(dim // BATCH_ROW + 1, dtype=np.uint32))
         # Random weights S (idx such that S[idx]=1 in each workgroup)
         N_WG = (dim + BATCH_ROW - 1) // BATCH_ROW
         sel = np.zeros(N_WG // 8 * 8 + 16, dtype=np.uint8)
-        for i in range(N_WG - 1):
+        if N_WG < 10:
             # always zero on last workgroup
-            sel[i] = random.randrange(BATCH_ROW)
+            for i in range(N_WG - 1):
+                sel[i] = random.randrange(BATCH_ROW)
+        else:
+            # very sparse weights to avoid overflow
+            assert BATCH_ROW < 255
+            sel.fill(255)
+            for i in random.sample(list(range(N_WG - 1)), 8):
+                sel[i] = random.randrange(BATCH_ROW)
         xsel = mgr.tensor_t(sel.view(np.uint32))
         # Output sequence out[k] = S M^k V
         xout = mgr.tensor_t(np.zeros(MODULI * ITERS, dtype=np.uint64).view(np.uint32))
-        xmod = mgr.tensor_t(np.array(ls, dtype=np.uint32))
+        xmod = mgr.tensor_t(np.array(ls, dtype=word_t).view(np.uint32))
 
         xd, xplus, xminus, xidxp, xidxm = self.tensors
-        kernel = gpu.compile(
-            "spmv_multi.comp", self.defines | {"MODULI": MODULI, "BATCH_ROW": BATCH_ROW}
-        )
+        defines = self.defines | {"MODULI": MODULI, "BATCH_ROW": BATCH_ROW}
+        if INT64:
+            defines |= {"INT64": 1}
+        kernel = gpu.compile("spmv_multi.comp", defines)
         algo = mgr.algorithm(
             [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xsel, xout, xmod],
             kernel,
@@ -223,9 +238,9 @@ class SpMV:
             .eval()
         )
 
-        v = xv.data().reshape((2, dim, MODULI))
+        v = xv.data().view(word_t).reshape((2, dim, MODULI))
         for i, l in enumerate(ls):
-            v[0, :, i] = np.random.randint(0, l, dim, dtype=np.int32)
+            v[0, :, i] = np.random.randint(0, l, dim, dtype=word_t)
         # Random (sparse) set of weights
         sequence = []
         mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
@@ -263,7 +278,7 @@ class SpMV:
             sequence = [int(x) % li for x in vout[:, i]]
 
             poly = flint_extras.berlekamp_massey(sequence, li)
-            assert len(poly) == dim + 1
+            assert len(poly) == dim + 1, f"l={li} deg={len(poly)-1}"
             det = -poly[0] * pow(poly[dim], -1, li) % li
             dets.append(det)
             if check:

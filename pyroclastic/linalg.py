@@ -753,11 +753,19 @@ def detz(subrels, threads):
     weight = sum(len(r) for r in subrels)
     basis, dense, plus, minus, norm = to_sparse_matrix(subrels)
     dim = len(basis)
-    BATCH_SIZE = 64 if dim < 16384 else 32
+    BATCH_SIZE = 64
+    if dim >= 16384 and not gpu.is_discrete_gpu():
+        BATCH_SIZE = 32
 
-    max_mod32 = (2**31) // norm
+    if gpu.has_fast_add64():
+        # Use 64-bit moduli (2.3x larger) when possible
+        logging.info(f"Using 64-bit arithmetic on {gpu.device_name()}")
+        BATCH_SIZE //= 2
+        max_mod = (2**63) // norm
+    else:
+        max_mod = (2**31) // norm
     moduli = [
-        x for x in range(max_mod32 - 2**20, max_mod32) if flint.fmpz(x).is_prime()
+        x for x in range(max_mod - 2**20, max_mod) if flint.fmpz(x).is_prime()
     ]
     logging.debug(f"Prepared {len(moduli)} small prime moduli for determinant")
 
@@ -899,6 +907,9 @@ def bench(rels):
     moduli = [
         x for x in range(max_mod32 - 10000, max_mod32) if flint.fmpz(x).is_prime()
     ]
+    moduli64 = [
+        x for x in range(max_mod64 - 10000, max_mod64) if flint.fmpz(x).is_prime()
+    ][:3] + moduli[3:]
 
     Mat = SpMV(dense, plus, minus, basis, weight)
     logging.info("Running with 16 moduli (naive kernel)")
@@ -909,6 +920,11 @@ def bench(rels):
     Mat.wiedemann_multi(moduli[:64], check=CHECK)
     logging.info("Running with 128 moduli (naive kernel)")
     Mat.wiedemann_multi(moduli[:128], check=CHECK)
+
+    logging.info("Running with 32 moduli64 (naive kernel)")
+    Mat.wiedemann_multi(moduli64[:32], check=CHECK)
+    logging.info("Running with 64 moduli64 (naive kernel)")
+    Mat.wiedemann_multi(moduli64[:64], check=CHECK)
 
     if dim < 32768:
         # indices must fit int16
@@ -926,8 +942,6 @@ def bench(rels):
         #Mat1.wiedemann_medium(moduli[:16], check=False)
         # logging.info("Running with 64 moduli (medium)")
         # Mat1.wiedemann_medium(moduli[:64], check=False)
-
-    moduli64 = [10000000000000061] + moduli
 
     if dim < gpu.max_shmem() // 8:
         logging.info("Running with 16 moduli64 (small)")

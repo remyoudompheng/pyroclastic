@@ -24,6 +24,14 @@
 #error BATCH_ROW undefined
 #endif
 
+#ifdef INT64
+#define WORD_T int64_t
+#define UWORD_T uint64_t
+#else
+#define WORD_T int
+#define UWORD_T uint
+#endif
+
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
@@ -41,18 +49,22 @@ layout(binding = 4) readonly buffer IdxMinus { uint idxMinus[]; };
 // Vector of size 2N Moduli:
 // even iterations do V[N:2N] = M * V[0:N]
 // odd iterations do V[0:N] = M * V[N:2N]
-layout(binding = 5) buffer V { uint v[]; };
+layout(binding = 5) buffer V { UWORD_T v[]; };
 // Vector of identical values (1 per workgroup) indicating iteration count
 layout(binding = 6) buffer Iter { uint iter[]; };
 // Output mask for Wiedemann algorithm sequence.
 layout(binding = 7) coherent buffer Wsel { uint8_t wsel[]; };
-// Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where wsel[idx]=1)
+// Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
+// wsel[idx]=1)
 layout(binding = 8) coherent buffer Wout { uint64_t wout[]; };
-layout(binding = 9) readonly buffer Moduli { uint moduli[]; };
+layout(binding = 9) readonly buffer Moduli { UWORD_T moduli[]; };
 
-int fastmod(int x, uint p) {
+UWORD_T fastmod(WORD_T x, UWORD_T p) {
   float pinv = 1.0 / float(p);
-  return x - int(p) * int(floor(float(x) * pinv));
+  x -= WORD_T(p) * WORD_T(int(floor(float(x) * pinv)));
+  if (x < 0)
+    x += WORD_T(p);
+  return UWORD_T(x);
 }
 
 void main() {
@@ -60,33 +72,33 @@ void main() {
   uint midx = gl_LocalInvocationID.x;
   uint off0 = ((idx & 1) == 0) ? 0 : N * MODULI;
   uint off1 = ((idx & 1) == 0) ? N * MODULI : 0;
-  uint p = moduli[midx];
   uint row = gl_GlobalInvocationID.y;
-  if (row >= N) return;
-  int acc = 0;
+  if (row >= N)
+    return;
+  WORD_T acc = 0;
   // Dense block
   uint dense_base = row * DENSE_N;
   for (uint i = 0; i < DENSE_N; i++) {
-    acc += int(dense[dense_base + i]) * int(v[off0 + MODULI * i + midx]);
+    acc += WORD_T(dense[dense_base + i]) * WORD_T(v[off0 + MODULI * i + midx]);
   }
   // +1 coefficients
   uint plus0 = idxPlus[row];
   uint plus1 = idxPlus[row + 1];
   for (uint i = plus0; i < plus1; i++) {
-    acc += int(v[off0 + MODULI * plus[i] + midx]);
+    acc += WORD_T(v[off0 + MODULI * plus[i] + midx]);
   }
   // -1 coefficients
   uint minus0 = idxMinus[row];
   uint minus1 = idxMinus[row + 1];
   for (uint i = minus0; i < minus1; i++) {
-    acc -= int(v[off0 + MODULI * minus[i] + midx]);
+    acc -= WORD_T(v[off0 + MODULI * minus[i] + midx]);
   }
   // Output result to next row
-  acc = fastmod(acc, p);
-  v[off1 + MODULI * row + midx] = uint(acc);
+  const UWORD_T uacc = fastmod(acc, moduli[midx]);
+  v[off1 + MODULI * row + midx] = uacc;
   barrier();
-  if (gl_LocalInvocationID.x == 0)
-	  iter[gl_WorkGroupID.y] = idx + 1;
+  if (gl_LocalInvocationID == uvec3(0))
+    iter[gl_WorkGroupID.y] = idx + 1;
   if (gl_LocalInvocationID.y == wsel[gl_WorkGroupID.y])
-	  atomicAdd(wout[MODULI * idx + midx], acc);
+    atomicAdd(wout[MODULI * idx + midx], uacc);
 }
