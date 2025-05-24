@@ -46,6 +46,7 @@ class GPUInfo:
             props = info["capabilities"]["device"]["properties"]
             phyprops = props["VkPhysicalDeviceProperties"]
         self.devname = phyprops["deviceName"]
+        self.devtype = phyprops["deviceType"]
         self.stamp_period = phyprops["limits"]["timestampPeriod"]
         self.max_shmem = phyprops["limits"]["maxComputeSharedMemorySize"]
 
@@ -56,6 +57,11 @@ _gpuinfo = GPUInfo()
 def device_name() -> str:
     _gpuinfo.load()
     return _gpuinfo.devname
+
+
+def is_discrete_gpu() -> bool:
+    _gpuinfo.load()
+    return _gpuinfo.devtype == "VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU"
 
 
 def stamp_period() -> int:
