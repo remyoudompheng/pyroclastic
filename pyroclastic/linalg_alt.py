@@ -129,7 +129,7 @@ class SpMV:
         v = np.random.randint(0, l, dim, dtype=np.int32)
         xv.data()[:dim] = v
         sequence = []
-        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+        mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
@@ -226,7 +226,7 @@ class SpMV:
             v[0, :, i] = np.random.randint(0, l, dim, dtype=np.int32)
         # Random (sparse) set of weights
         sequence = []
-        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+        mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
@@ -436,7 +436,7 @@ class BlockCOO:
             v[0, :, i] = np.random.randint(0, l, dim, dtype=word_t)
         # Random (sparse) set of weights
         sequence = []
-        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+        mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
@@ -644,7 +644,7 @@ class BlockCOOv2:
             v[i, 0, :] = np.random.randint(0, l, dim, dtype=word_t)
         # Random (sparse) set of weights
         sequence = []
-        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+        mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()

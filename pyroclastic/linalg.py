@@ -223,7 +223,7 @@ class CSRMatrix:
         for i, l in enumerate(ls):
             v[i, :] = np.random.randint(0, l, dim, dtype=word_t)
         sequence = []
-        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+        mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
@@ -307,7 +307,7 @@ class CSRMatrix:
         )
         (
             mgr.sequence()
-            .record(kp.OpTensorSyncDevice([xd, xrows, xidx, xv, xsel, xout, xmod]))
+            .record(kp.OpTensorSyncDevice([xd, xrows, xidx, xv, xiter, xsel, xout, xmod]))
             .record(kp.OpAlgoDispatch(algo))
             .record(kp.OpTensorSyncLocal([xv]))
             .eval()
@@ -369,7 +369,7 @@ class CSRMatrix:
         for i, l in enumerate(ls):
             v[i, :] = np.random.randint(0, l, dim, dtype=word_t)
         sequence = []
-        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+        mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
@@ -440,7 +440,6 @@ class CSRMatrix:
         # Tensor holding M^k V
         xv = mgr.tensor_t(np.zeros(dim, dtype=word_t).view(np.uint32))
         xv.data().view(word_t)[:] = v
-        xiter = mgr.tensor_t(np.zeros(MODULI, dtype=np.uint32))
         # Ignored tensors
         SEL_BLOCK = 256
         xsel = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
@@ -649,9 +648,8 @@ class BlockCOO:
             v[i // MODULI_STRIDE, 0, :, i % MODULI_STRIDE] = np.random.randint(
                 0, l, dim, dtype=word_t
             )
-        # Random (sparse) set of weights
         sequence = []
-        mgr.sequence().record(kp.OpTensorSyncDevice([xv])).eval()
+        mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (xd.size() + xsparse.size() + xidx.size())
         vec_size = 4 * xv.size()
@@ -671,7 +669,7 @@ class BlockCOO:
                 stamps = seq.get_timestamps()
                 gpu_ticks += stamps[-1] - stamps[0]
 
-        mgr.sequence().record(kp.OpTensorSyncLocal([xout, xiter])).eval()
+        mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
         vout = xout.data().view(np.uint64).reshape((ITERS, MODULI))
 
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
