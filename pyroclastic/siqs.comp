@@ -81,20 +81,23 @@ const uint M = ITERS * SEGMENT_SIZE / 2;
 
 uvec2 start_offsets(uint poly_idx, uint pidx) {
   const uint p = primes[pidx];
-  const float pinv = 1.0 / float(p);
   int rp = int(proots[pidx]);
   if (rp < 0)
     return uvec2(-1, -1);
   uint idx1 = bitfieldExtract(poly_idx, 0, 4);
   uint idx2 = bitfieldExtract(poly_idx, 4, 4);
+  // Compute M + (sqrt(N) - B) / 2A
+  // by combining precomputed partial sums.
   int bp = proots[pidx + primes.length() * (1 + idx1)];
-  bp += proots[pidx + primes.length() * (17 + idx2)];
+  bp -= proots[pidx + primes.length() * (17 + idx2)];
+  if (bp < 0)
+    bp += int(p);
 #if AFACS > 9
   uint idx3 = bitfieldExtract(poly_idx, 8, AFACS - 9);
-  bp += proots[pidx + primes.length() * (33 + idx3)];
+  bp -= proots[pidx + primes.length() * (33 + idx3)];
+  if (bp < 0)
+    bp += int(p);
 #endif
-  // Compute M + (sqrt(N) - B) / 2A
-  bp = int(modp_float(int(M) - bp, p, pinv));
 
   uvec2 res = uvec2(rp + bp, p - rp + bp);
   if (res.x >= p)

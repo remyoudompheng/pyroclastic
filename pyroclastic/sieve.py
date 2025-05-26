@@ -392,7 +392,15 @@ class Siever:
         # Send initial buffers (immutable)
         mgr.sequence().record(kp.OpTensorSyncDevice([xp, xn, xargs])).eval()
 
-        PRESHADER = gpu.compile("siqs_prepare.comp", {"BLEN": BLEN, "AFACS": AFACS})
+        PRESHADER = gpu.compile(
+            "siqs_prepare.comp",
+            {
+                "BLEN": BLEN,
+                "AFACS": AFACS,
+                "SEGMENT_SIZE": SEGMENT_SIZE,
+                "ITERS": ITERS,
+            },
+        )
 
         SHADER = gpu.compile(
             "siqs.comp",
