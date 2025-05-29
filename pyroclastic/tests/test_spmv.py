@@ -9,7 +9,6 @@ from pyroclastic import linalg_alt
 
 
 def random_relations(N: int, primes: list, size: int, dense: list):
-    sum1p = sum(1.0 / p for p in primes)
     sumlp = sum(math.log2(p) / p for p in primes)
     scale = size / sumlp
     assert scale < 20
@@ -156,6 +155,7 @@ def test_csr_matrix():
     print(mv5)
     assert np.all(mv1 == mv5)
 
+
 def test_blockcoo3():
     rows, basis = init_random_matrix()
     dim = len(rows)
@@ -173,7 +173,3 @@ def test_blockcoo3():
     mv6 = m6.mulvec(65537, v2)
     print(mv6)
     assert np.all(mv1 == mv6)
-
-
-if __name__ == "__main__":
-    main()

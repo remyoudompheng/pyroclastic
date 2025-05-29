@@ -120,7 +120,7 @@ def prune2(rawrels: list, B1: int, pbase: int):
     for r in rels:
         cols.update(r)
     logging.info(
-        f"[prune2] After pruning: {len(rels)} relations with {len(cols)+pbase} primes"
+        f"[prune2] After pruning: {len(rels)} relations with {len(cols) + pbase} primes"
     )
 
     return pruned, len(rels) - len(cols) - pbase
@@ -199,7 +199,7 @@ def step_filter(rels, datadir: pathlib.Path):
         nc, nr = len(stats), len(remaining)
         assert nr > nc
         print(
-            f"Starting {d}-merge: {nc} columns {nr} rows excess={nr-nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={time.time() - t:.1f}s"
+            f"Starting {d}-merge: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={time.time() - t:.1f}s"
         )
 
         if d > nc // 3:
@@ -316,7 +316,7 @@ def step_filter(rels, datadir: pathlib.Path):
     maxe = max(abs(e) for r in rels for e in r.values())
     dt = time.time() - t0
     print(
-        f"Final: {nc} columns {nr} rows excess={nr-nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={dt:.1f}s"
+        f"Final: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={dt:.1f}s"
     )
     if datadir is not None:
         # Dump result

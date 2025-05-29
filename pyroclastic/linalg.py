@@ -21,7 +21,6 @@ import itertools
 import json
 import logging
 import math
-import os
 import pathlib
 import random
 import time
@@ -232,7 +231,9 @@ class CSRMatrix:
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+        logging.info(
+            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
+        )
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
@@ -275,7 +276,7 @@ class CSRMatrix:
 
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls
 
@@ -296,7 +297,6 @@ class CSRMatrix:
         xv.data().view(word_t)[:] = v
         xiter = mgr.tensor_t(np.zeros(MODULI, dtype=np.uint32))
         # Ignored tensors
-        SEL_BLOCK = 256
         xsel = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
         xiter, xout = xsel, xsel
         xmod = mgr.tensor_t(np.array([l], dtype=np.uint32))
@@ -312,7 +312,9 @@ class CSRMatrix:
         )
         (
             mgr.sequence()
-            .record(kp.OpTensorSyncDevice([xd, xrows, xidx, xv, xiter, xsel, xout, xmod]))
+            .record(
+                kp.OpTensorSyncDevice([xd, xrows, xidx, xv, xiter, xsel, xout, xmod])
+            )
             .record(kp.OpAlgoDispatch(algo))
             .record(kp.OpTensorSyncLocal([xv]))
             .eval()
@@ -378,7 +380,9 @@ class CSRMatrix:
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+        logging.info(
+            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
+        )
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
@@ -422,13 +426,12 @@ class CSRMatrix:
 
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls
 
     def matmul_medium(self, l: int, v, CHUNK_N=None):
         "For testing"
-        MODULI = 1
         if l.bit_length() > 32:
             INT64 = True
             word_t = np.uint64
@@ -446,7 +449,6 @@ class CSRMatrix:
         xv = mgr.tensor_t(np.zeros(dim, dtype=word_t).view(np.uint32))
         xv.data().view(word_t)[:] = v
         # Ignored tensors
-        SEL_BLOCK = 256
         xsel = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
         xiter, xout = xsel, xsel
         xmod = mgr.tensor_t(np.array([l], dtype=np.uint32))
@@ -555,7 +557,6 @@ class BlockCOO:
         xv = mgr.tensor_t(np.zeros(dim * 2 * MODULI, dtype=word_t).view(np.uint32))
         # Random weights S (idx such that S[idx]=1 in each workgroup)
         N_STRIPES = (dim + BM - 1) // BM
-        N_WG = N_STRIPES
         # Ignored tensors
         xsel = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
         xiter, xout = xsel, xsel
@@ -658,7 +659,9 @@ class BlockCOO:
 
         mat_size = 4 * (xd.size() + xsparse.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+        logging.info(
+            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
+        )
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
@@ -699,7 +702,7 @@ class BlockCOO:
 
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls
 
@@ -746,7 +749,9 @@ def worker_init(*initargs):
 
 
 def worker_task(moduli):
-    return WORKER_M.wiedemann_multi(moduli, check=False, lock=GPU_LOCK[WORKER_M.gpu_idx])
+    return WORKER_M.wiedemann_multi(
+        moduli, check=False, lock=GPU_LOCK[WORKER_M.gpu_idx]
+    )
 
 
 def detz(subrels, threads):
@@ -766,9 +771,7 @@ def detz(subrels, threads):
         max_mod = (2**63) // norm
     else:
         max_mod = (2**31) // norm
-    moduli = [
-        x for x in range(max_mod - 2**20, max_mod) if flint.fmpz(x).is_prime()
-    ]
+    moduli = [x for x in range(max_mod - 2**20, max_mod) if flint.fmpz(x).is_prime()]
     logging.debug(f"Prepared {len(moduli)} small prime moduli for determinant")
 
     margs = (dense, plus, minus, basis, weight)
@@ -949,8 +952,8 @@ def bench(rels):
             Mat1.wiedemann_multi(moduli[:128], check=CHECK)
 
         # FIXME: broken?
-        #logging.info("Running with 16 moduli (medium)")
-        #Mat1.wiedemann_medium(moduli[:16], check=False)
+        # logging.info("Running with 16 moduli (medium)")
+        # Mat1.wiedemann_medium(moduli[:16], check=False)
         # logging.info("Running with 64 moduli (medium)")
         # Mat1.wiedemann_medium(moduli[:64], check=False)
 

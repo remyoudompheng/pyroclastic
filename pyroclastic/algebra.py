@@ -1,6 +1,5 @@
 import math
 
-import flint
 import numpy as np
 import pyroclastic_flint_extras as flint_extras
 

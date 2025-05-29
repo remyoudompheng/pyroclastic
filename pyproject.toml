@@ -35,3 +35,7 @@ pyroclastic = ["*.comp"]
 [tool.pytest.ini_options]
 addopts = "--doctest-modules"
 pythonpath = ["."]
+
+[tool.ruff.lint]
+# It's okay to name variables 'l'
+ignore = ["E741"]

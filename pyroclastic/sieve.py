@@ -28,17 +28,13 @@ Polynomial extrema are P(0)=sqrt(N)*M/2, P(±M)=sqrt(N)*M
 from typing import Tuple, Optional
 
 import argparse
-import importlib
 import itertools
 import json
 import logging
 import math
 import os
 import random
-import subprocess
-import struct
 import time
-import queue
 from multiprocessing import Pool, Semaphore, current_process
 
 import numpy as np
@@ -101,7 +97,7 @@ def make_a(
     res = sorted((abs(product(ps) - target), ps) for ps in sorted(set(candidates)))
     res = res[: len(res) // 2]
     quality = float(res[-1][0]) / float(target)
-    logging.debug(f"Prepared {len(res)} values of A, quality {100*quality:.2f}%")
+    logging.debug(f"Prepared {len(res)} values of A, quality {100 * quality:.2f}%")
     return [_ps for _, _ps in res]
 
 
@@ -177,7 +173,7 @@ def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, NLARGE, OUTSTRIDE):
         vfacs = np.frombuffer(bfacs, dtype=np.uint32)
     else:
         vout, vfacs = bout, bfacs
-    WORKCHUNK = len(vout) // OUTSTRIDE
+
     reports = 0
     results = []
     A, ak, Bi = ABi
@@ -307,7 +303,6 @@ class Siever:
 
         WORKCHUNK = 2 ** (AFACS - 1)
 
-        devname = gpu.device_name()
         self.stampPeriod = gpu.stamp_period()
 
         proc = current_process()
@@ -437,14 +432,19 @@ def worker_task(ak):
 def main():
     argp = argparse.ArgumentParser()
     argp.add_argument("-v", "--verbose", action="store_true")
+    argp.add_argument("--check", action="store_true", help="Verify relations")
     argp.add_argument(
-        "--check", action="store_true", help="Verify relations (requires cypari2)"
+        "-j",
+        metavar="THREADS",
+        type=int,
+        help="Number of CPU threads (and parallel GPU jobs)",
     )
     argp.add_argument(
-        "-j", metavar="THREADS", type=int, help="Number of CPU threads (and parallel GPU jobs)"
-    )
-    argp.add_argument(
-        "--ngpu", metavar="GPUS", type=int, default=1, help="Number of GPUs (usually a divisor of THREADS)"
+        "--ngpu",
+        metavar="GPUS",
+        type=int,
+        default=1,
+        help="Number of GPUs (usually a divisor of THREADS)",
     )
     argp.add_argument("N", type=int)
     argp.add_argument("OUTDIR")
@@ -452,7 +452,8 @@ def main():
 
     main_impl(args)
 
-def main_impl(args):
+
+def main_impl(args: argparse.Namespace):
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
@@ -472,7 +473,6 @@ def main_impl(args):
 
     D = -abs(N)
     del N
-    COFACTOR_BACKGROUND = True
 
     primes = []
     roots = []
@@ -480,8 +480,10 @@ def main_impl(args):
         assert (k * k - D) % p == 0
         primes.append(p)
         roots.append(k)
-    logging.debug(f"Prime base size {len(primes)} {primes[:10]} ... {primes[-1]}, B2={B2/1e6:.1f}M")
-    logging.debug(f"Interval size {M//512}k")
+    logging.debug(
+        f"Prime base size {len(primes)} {primes[:10]} ... {primes[-1]}, B2={B2 / 1e6:.1f}M"
+    )
+    logging.debug(f"Interval size {M // 512}k")
 
     # A bucket contains offsets for a subsegment
     BUCKET_SIZE = 1
@@ -576,7 +578,7 @@ def main_impl(args):
             if nb % 10 == 0 and (nb < 1000 or time.monotonic() > last_print + 1.0):
                 last_print = time.monotonic()
                 print(
-                    f"Chunk {nb} ({sieved/1e6:.0f}M) done in {dt:.3f}s ({speed/1e9:.1f}G/s avg {avg_speed/1e9:.1f}G/s) {len(rows)}/{nreports} items (relations={_nr} [{rel_speed:.1f}/s] primes={_np} excess={_nr-_np})"
+                    f"Chunk {nb} ({sieved / 1e6:.0f}M) done in {dt:.3f}s ({speed / 1e9:.1f}G/s avg {avg_speed / 1e9:.1f}G/s) {len(rows)}/{nreports} items (relations={_nr} [{rel_speed:.1f}/s] primes={_np} excess={_nr - _np})"
                 )
 
             # Check if finished
@@ -607,7 +609,7 @@ def main_impl(args):
     avg_speed = sieved / (time.monotonic() - start_time)
     rel_speed = _nr / (time.monotonic() - start_time)
     print(
-        f"Sieved {nb} A ({sieved/1e6:.0f}M) in {dt:.3f}s (avg {avg_speed/1e9:.1f}G/s) (relations={_nr} [{rel_speed:.1f}/s] primes={_np} excess={_nr-_np})"
+        f"Sieved {nb} A ({sieved / 1e6:.0f}M) in {dt:.3f}s (avg {avg_speed / 1e9:.1f}G/s) (relations={_nr} [{rel_speed:.1f}/s] primes={_np} excess={_nr - _np})"
     )
 
     total_time = time.monotonic() - start_time

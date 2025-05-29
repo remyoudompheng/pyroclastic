@@ -29,7 +29,6 @@ import logging
 import random
 import time
 
-import flint
 import kp
 import numpy as np
 
@@ -135,7 +134,9 @@ class SpMV:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+        logging.info(
+            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
+        )
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
@@ -168,7 +169,7 @@ class SpMV:
 
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
 
         return poly
@@ -247,7 +248,9 @@ class SpMV:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+        logging.info(
+            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
+        )
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
@@ -276,7 +279,7 @@ class SpMV:
             sequence = [int(x) % li for x in vout[:, i]]
 
             poly = flint_extras.berlekamp_massey(sequence, li)
-            assert len(poly) == dim + 1, f"l={li} deg={len(poly)-1}"
+            assert len(poly) == dim + 1, f"l={li} deg={len(poly) - 1}"
             det = -poly[0] * pow(poly[dim], -1, li) % li
             dets.append(det)
             if check:
@@ -284,11 +287,13 @@ class SpMV:
                 assert len(poly) == dim + 1
                 det = -poly[0] * pow(poly[dim], -1, li) % li
                 if i < 5 or i > len(ls) - 5:
-                    logging.info(f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}")
+                    logging.info(
+                        f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
+                    )
 
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls
 
@@ -460,7 +465,9 @@ class BlockCOO:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+        logging.info(
+            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
+        )
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
@@ -495,7 +502,7 @@ class BlockCOO:
 
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return polys
 
@@ -668,7 +675,9 @@ class BlockCOOv2:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.info(f"Buffer sizes: matrix {mat_size>>10}kB vectors {vec_size>>10}kB")
+        logging.info(
+            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
+        )
 
         t0 = time.monotonic()
         gpu_ticks = 0.0
@@ -708,6 +717,6 @@ class BlockCOOv2:
 
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls
