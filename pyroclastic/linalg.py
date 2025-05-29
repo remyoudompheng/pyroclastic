@@ -18,8 +18,10 @@ D = 400 bits => dim 50000
 
 from contextlib import nullcontext
 import itertools
+import json
 import logging
 import math
+import os
 import pathlib
 import random
 import time
@@ -790,22 +792,31 @@ def detz(subrels, threads):
 
 def main():
     import argparse
-    import json
-    import os
 
     p = argparse.ArgumentParser()
+    p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument(
         "-j", metavar="THREADS", default=2, type=int, help="Number of parallel GPU jobs"
     )
     p.add_argument(
-        "--ngpu", metavar="GPUS", type=int, default=1, help="Number of GPUs (usually a divisor of THREADS)"
+        "--ngpu",
+        metavar="GPUS",
+        type=int,
+        default=1,
+        help="Number of GPUs (usually a divisor of THREADS)",
     )
     p.add_argument("--bench", action="store_true")
     p.add_argument("DATADIR")
     args = p.parse_args()
 
-    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger().setLevel(logging.INFO)
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
 
+    main_impl(args)
+
+
+def main_impl(args):
     while len(GPU_LOCK) < args.ngpu:
         GPU_LOCK.append(Semaphore(2))
 

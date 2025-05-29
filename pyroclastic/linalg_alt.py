@@ -26,7 +26,6 @@ D = 400 bits => dim 50000
 
 from contextlib import nullcontext
 import logging
-import pathlib
 import random
 import time
 
@@ -36,7 +35,6 @@ import numpy as np
 
 from . import gpu
 from . import linalg
-from . import relations
 import pyroclastic_flint_extras as flint_extras
 
 
@@ -713,120 +711,3 @@ class BlockCOOv2:
             f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops/1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls
-
-
-def main():
-    import argparse
-    import os
-
-    p = argparse.ArgumentParser()
-    p.add_argument("DATADIR")
-    args = p.parse_args()
-
-    logging.getLogger().setLevel(logging.DEBUG)
-
-    rels = []
-    datadir = pathlib.Path(args.DATADIR)
-    if (datadir / "relations.filtered").is_file():
-        with open(datadir / "relations.filtered") as f:
-            for l in f:
-                facs = l.split()
-                rels.append(
-                    {int(p): int(e) for p, _, e in (f.partition("^") for f in facs)}
-                )
-
-        logging.info(f"Imported {len(rels)} relations")
-
-    else:
-        with open(datadir / "relations.sieve") as f:
-            for l in f:
-                rels.append([int(x) for x in l.split()])
-
-        logging.info(f"Imported {len(rels)} relations")
-        pruned, _ = relations.prune2(rels, 0, 0)
-
-        # for r in pruned:
-        #    print(r)
-
-        filtered = relations.step_filter(pruned, pathlib.Path(args.DATADIR))
-        rels = filtered
-
-    basis1 = sorted(set(p for r in rels for p, e in r.items() if e))
-    dim = len(basis1)
-    print(f"Truncating to square matrix (dim {dim})")
-    while True:
-        subres = random.sample(rels, dim)
-        if len(basis1) == len(set(p for r in subres for p, e in r.items() if e)):
-            rels = subres
-            break
-
-    basis, dense, plus, minus, weight = linalg.to_sparse_matrix(rels)
-    assert sorted(basis) == basis1
-
-    # print("Dense block")
-    # print(dense)
-    # print("Rows +1")
-    # print(plus[:10], "...")
-    # print("Rows -1")
-    # print(minus[:10], "...")
-
-    CHECK = True
-
-    moduli = [x for x in range(1000_000, 1010000) if flint.fmpz(x).is_prime()]
-
-    logging.info("Running with 1 modulus")
-    Mat = SpMV(dense, plus, minus, basis, weight)
-    Mat.wiedemann(65537, check=CHECK)
-    logging.info("Running spmv_multi with 8 moduli")
-    Mat.wiedemann_multi(moduli[:8], check=CHECK)
-    logging.info("Running spmv_multi with 16 moduli")
-    Mat.wiedemann_multi(moduli[:16], check=CHECK)
-    logging.info("Running spmv_multi with 32 moduli")
-    Mat.wiedemann_multi(moduli[:32], check=CHECK)
-    logging.info("Running spmv_multi with 64 moduli")
-    Mat.wiedemann_multi(moduli[:64], check=CHECK)
-
-    Mat2 = BlockCOO(dense, plus, minus, basis, weight)
-    logging.info("Running BlockCOO with 1 modulus")
-    Mat2.wiedemann_multi([65537], check=CHECK)
-    logging.info("Running BlockCOO with 4 moduli")
-    Mat2.wiedemann_multi(moduli[:4], check=CHECK)
-    logging.info("Running BlockCOO with 8 moduli")
-    Mat2.wiedemann_multi(moduli[:8], check=CHECK)
-    if Mat2.BM <= 1024:
-        logging.info("Running BlockCOO with 16 moduli")
-        Mat2.wiedemann_multi(moduli[:16], check=CHECK)
-
-    moduli64 = [10000000000000061] + moduli
-    logging.info("Running BlockCOO with 1 moduli (64-bit)")
-    Mat2.wiedemann_multi(moduli64[:1], check=CHECK)
-    logging.info("Running BlockCOO with 4 moduli (64-bit)")
-    Mat2.wiedemann_multi(moduli64[:4], check=CHECK)
-    if Mat2.BM <= 1024:
-        logging.info("Running BlockCOO with 8 moduli (64-bit)")
-        Mat2.wiedemann_multi(moduli64[:8], check=CHECK)
-
-    Mat2 = BlockCOOv2(dense, plus, minus, basis, weight)
-    logging.info("Running BlockCOO v2 with 8 moduli")
-    Mat2.wiedemann_multi(moduli[:8], check=CHECK)
-    logging.info("Running BlockCOO v2 with 32 moduli")
-    Mat2.wiedemann_multi(moduli[:32], check=CHECK)
-    logging.info("Running BlockCOO v2 with 128 moduli")
-    Mat2.wiedemann_multi(moduli[:128], check=CHECK)
-    if dim < 10000:
-        logging.info("Running BlockCOO v2 with 256 moduli")
-        Mat2.wiedemann_multi(moduli[:256], check=CHECK)
-
-    logging.info("Running BlockCOO v2 with 8 moduli64")
-    Mat2.wiedemann_multi(moduli64[:8], check=CHECK)
-    logging.info("Running BlockCOO v2 with 32 moduli64")
-    Mat2.wiedemann_multi(moduli64[:32], check=CHECK)
-    if dim < 10000:
-        logging.info("Running BlockCOO v2 with 128 moduli64")
-        Mat2.wiedemann_multi(moduli64[:128], check=CHECK)
-        logging.info("Running BlockCOO v2 with 256 moduli64")
-        Mat2.wiedemann_multi(moduli64[:256], check=CHECK)
-
-
-if __name__ == "__main__":
-    main()

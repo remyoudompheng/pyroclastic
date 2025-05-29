@@ -450,6 +450,9 @@ def main():
     argp.add_argument("OUTDIR")
     args = argp.parse_args()
 
+    main_impl(args)
+
+def main_impl(args):
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
