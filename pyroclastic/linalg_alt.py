@@ -134,7 +134,7 @@ class SpMV:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.info(
+        logging.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -248,7 +248,7 @@ class SpMV:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.info(
+        logging.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -465,7 +465,7 @@ class BlockCOO:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.info(
+        logging.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -675,7 +675,7 @@ class BlockCOOv2:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.info(
+        logging.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 

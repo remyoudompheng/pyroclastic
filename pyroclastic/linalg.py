@@ -53,8 +53,10 @@ def to_sparse_matrix(rels):
     assert len(dense_p) % 4 == 0
 
     dense_weight = sum(stats[p] for p in dense_p) / float(len(rels))
-    logging.info(f"Dense columns for {len(dense_p)} primes {dense_p}")
-    logging.info(f"Dense block has average weight {dense_weight:.1f} per row")
+    logging.debug(f"Dense columns for {len(dense_p)} primes {dense_p}")
+    logging.info(
+        f"Dense block has {len(dense_p)} columns, average weight {dense_weight:.1f} per row"
+    )
     sparse_weight = sum(
         sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
     ) / float(len(rels))
@@ -184,7 +186,7 @@ class CSRMatrix:
             word_t = np.uint32
         mgr = self.mgr
         dim = self.dim
-        #assert dim >= 256
+        # assert dim >= 256
         if dim < 5000:
             BATCHSIZE = 64
         elif dim < 10000:
@@ -231,7 +233,7 @@ class CSRMatrix:
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.info(
+        logging.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -264,7 +266,9 @@ class CSRMatrix:
             assert len(poly) <= dim + 1, len(poly)
             # polys.append(poly)
             if len(poly) <= dim:
-                logging.error(f"Skip modulus {li}, minimal polynomial has degree {len(poly)-1} < {dim}")
+                logging.error(
+                    f"Skip modulus {li}, minimal polynomial has degree {len(poly) - 1} < {dim}"
+                )
                 continue
             assert len(poly) == dim + 1, len(poly)
             det = -poly[0] * pow(poly[dim], -1, li) % li
@@ -385,7 +389,7 @@ class CSRMatrix:
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.info(
+        logging.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -664,7 +668,7 @@ class BlockCOO:
 
         mat_size = 4 * (xd.size() + xsparse.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.info(
+        logging.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -855,12 +859,8 @@ def main_impl(args):
             for l in f:
                 rels.append([int(x) for x in l.split()])
 
-        logging.info(f"Imported {len(rels)} relations")
-        pruned, _ = relations.prune2(rels, 0, 0)
-
-        # for r in pruned:
-        #    print(r)
-
+        logging.info(f"Imported {len(rels)} relations (before prune/filter)")
+        pruned, _ = relations.step_prune(rels, 0, 0, pathlib.Path(args.DATADIR))
         filtered = relations.step_filter(pruned, pathlib.Path(args.DATADIR))
         rels = filtered
 

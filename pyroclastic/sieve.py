@@ -585,7 +585,7 @@ def main_impl(args: argparse.Namespace):
             # Check if finished
             gap = _nr - _np
             if next_check == 0 and gap > -_nr:
-                _, curexc = relations.prune2(results, B1, len(primes))
+                _, curexc = relations.step_prune(results, B1, len(primes))
                 if curexc is None:
                     curexc = gap
                 curexc -= TARGET_GAP
@@ -595,7 +595,7 @@ def main_impl(args: argparse.Namespace):
                 needed = max(500, min(20000, 2 * abs(curexc)))
                 next_check = gap + needed
             if next_check and gap > next_check:
-                pruned, curexc = relations.prune2(results, B1, len(primes))
+                pruned, curexc = relations.step_prune(results, B1, len(primes))
                 if curexc is None:
                     curexc = gap
                 curexc -= TARGET_GAP
@@ -618,11 +618,6 @@ def main_impl(args: argparse.Namespace):
         f"Got {len(results)} relations with {len(all_primes)} primes in {total_time:.3f}s"
     )
 
-    pruned, _ = relations.prune2(results, B1, len(primes))
-    with open("/tmp/relations.pruned", "w") as wp:
-        for row in pruned:
-            print(" ".join(str(_x) for _x in row), file=wp)
-
     if args.check:
         forms = {}
 
@@ -631,7 +626,7 @@ def main_impl(args: argparse.Namespace):
                 forms[p] = flint_extras.qfb.prime_form(D, p)
             return forms[p]
 
-        for _row in tqdm.tqdm(results):
+        for _row in results:
             q = ideal(1)
             for p in _row:
                 if p > 0:
@@ -640,12 +635,14 @@ def main_impl(args: argparse.Namespace):
                     q = q * ideal(-p) ** -1
             # q must be the unit form
             assert q.q()[0] == 1, (_row, q)
+        logging.info(f"Checked {len(results)} class group relations")
 
-    for _row in results[:16]:
-        print(_row)
-    print("...")
-    for _row in results[-16:]:
-        print(_row)
+    if args.verbose:
+        for _row in results[:16]:
+            print(_row)
+        print("...")
+        for _row in results[-16:]:
+            print(_row)
 
 
 if __name__ == "__main__":

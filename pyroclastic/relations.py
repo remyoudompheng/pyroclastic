@@ -5,7 +5,7 @@ import time
 from networkx import Graph, connected_components
 
 
-def prune2(rawrels: list, B1: int, pbase: int):
+def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None = None):
     """
     Variant with both singleton and clique removal.
     """
@@ -35,7 +35,7 @@ def prune2(rawrels: list, B1: int, pbase: int):
                 stats[p] = None
 
     excess = len(rels) - len(stats) - pbase
-    logging.info(f"[prune2] {len(stats) + pbase} primes appear in relations")
+    logging.info(f"[prune] {len(stats) + pbase} primes appear in relations")
 
     def prune(ridx):
         r = rels[ridx]
@@ -68,10 +68,10 @@ def prune2(rawrels: list, B1: int, pbase: int):
                 prune(stats[p][0])
                 singles += 1
         if singles:
-            logging.info(f"[prune2] pruned {singles} singletons")
+            logging.info(f"[prune] pruned {singles} singletons")
             nr = sum(1 for r in rels if r is not None)
             excess = nr - len(stats) - pbase
-            logging.info(f"[prune2] {len(stats) + pbase} primes appear in relations")
+            logging.info(f"[prune] {len(stats) + pbase} primes appear in relations")
         else:
             break
 
@@ -85,7 +85,7 @@ def prune2(rawrels: list, B1: int, pbase: int):
                 prune(stats[p][0])
                 singles += 1
         if singles:
-            logging.info(f"[prune2] pruned {singles} singletons")
+            logging.info(f"[prune] pruned {singles} singletons")
 
         m2 = [p for p, rs in stats.items() if rs is not None and len(rs) == 2]
         g = Graph()
@@ -103,7 +103,7 @@ def prune2(rawrels: list, B1: int, pbase: int):
         size = sum(len(c) for c in cliques_removed)
         if size:
             logging.info(
-                f"[prune2] pruning {len(cliques_removed)} cliques of {size} relations"
+                f"[prune] pruning {len(cliques_removed)} cliques of {size} relations"
             )
         for c in cliques_removed:
             for ridx in c:
@@ -120,8 +120,13 @@ def prune2(rawrels: list, B1: int, pbase: int):
     for r in rels:
         cols.update(r)
     logging.info(
-        f"[prune2] After pruning: {len(rels)} relations with {len(cols) + pbase} primes"
+        f"[prune] After pruning: {len(rels)} relations with {len(cols) + pbase} primes"
     )
+
+    if datadir is not None:
+        with open(datadir / "relations.pruned", "w") as wp:
+            for row in pruned:
+                print(" ".join(str(_x) for _x in row), file=wp)
 
     return pruned, len(rels) - len(cols) - pbase
 
@@ -141,7 +146,7 @@ def _as_dicts(rels: list[list]) -> list[dict]:
     return dicts
 
 
-def step_filter(rels, datadir: pathlib.Path):
+def step_filter(rels, datadir: pathlib.Path | None):
     rels = _as_dicts(rels)
 
     t0 = time.time()
@@ -181,8 +186,8 @@ def step_filter(rels, datadir: pathlib.Path):
         return out
 
     excess = len(rels) - len(stats)
-    print(f"{len(stats)} primes appear in relations")
-    print(f"{excess} relations can be removed")
+    logging.info(f"{len(stats)} primes appear in relations")
+    logging.info(f"{excess} relations can be removed")
 
     # prime p = product(l^e)
     saved_pivots = []
@@ -198,7 +203,7 @@ def step_filter(rels, datadir: pathlib.Path):
         maxe = max(abs(e) for r in remaining for _, e in r.items())
         nc, nr = len(stats), len(remaining)
         assert nr > nc
-        print(
+        logging.info(
             f"Starting {d}-merge: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={time.time() - t:.1f}s"
         )
 
@@ -214,7 +219,7 @@ def step_filter(rels, datadir: pathlib.Path):
             md = [k for k in stats if len(stats[k]) <= d]
             if not md:
                 break
-            print(f"{len(md)} {d}-merges candidates {min(md)}..{max(md)}")
+            logging.debug(f"{len(md)} {d}-merges candidates {min(md)}..{max(md)}")
             merged = 0
             for p in md:
                 rs = stats.get(p)
@@ -227,7 +232,7 @@ def step_filter(rels, datadir: pathlib.Path):
                 pividx = rs[0]
                 piv = rels[pividx]
                 if abs(piv[p]) > 1:
-                    print(f"skip pivoting on {p}")
+                    logging.debug(f"skip pivoting on {p}")
                     continue
                 for ridx in rs[1:]:
                     rp = pivot(piv, rels[ridx], p)
@@ -243,12 +248,11 @@ def step_filter(rels, datadir: pathlib.Path):
                 )
                 removed += 1
                 assert p not in stats
-                # FIXME: print pivot
                 merged += 1
 
             if not merged:
                 break
-            print(f"{merged} pivots done")
+            logging.debug(f"{merged} pivots done")
 
         remaining = [_r for _r in rels if _r is not None]
         nr, nc = len(remaining), len(stats)
@@ -295,14 +299,17 @@ def step_filter(rels, datadir: pathlib.Path):
 
     # Deduplicate before final step
     dedup = set()
+    duplicates = 0
     for ridx, r in enumerate(rels):
         if r is None:
             continue
         line = " ".join(f"{l}^{e}" for l, e in sorted(r.items()))
         if line in dedup:
-            logging.warn("Found duplicate relation after filtering")
+            duplicates += 1
             rels[ridx] = None
         dedup.add(line)
+    if duplicates:
+        logging.warn(f"Found {duplicates} duplicate relations after filtering")
 
     if excess > MIN_EXCESS:
         # scores = [(len(r), ridx) for ridx, r in enumerate(rels) if r is not None]
@@ -326,7 +333,7 @@ def step_filter(rels, datadir: pathlib.Path):
     avgw1 = sum(abs(e) for r in remaining for _, e in r.items()) / len(remaining)
     maxe = max(abs(e) for r in rels for e in r.values())
     dt = time.time() - t0
-    print(
+    logging.info(
         f"Final: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={dt:.1f}s"
     )
 
@@ -337,7 +344,7 @@ def step_filter(rels, datadir: pathlib.Path):
                 line = f"{p} = " + " ".join(f"{l}^{e}" for l, e in sorted(rel.items()))
                 w.write(line)
                 w.write("\n")
-            print(f"{len(saved_pivots)} removed relations written to", w.name)
+            logging.info(f"{len(saved_pivots)} removed relations written to {w.name}")
 
         seen = set()
         with open(datadir / "relations.filtered", "w") as w:
@@ -345,7 +352,7 @@ def step_filter(rels, datadir: pathlib.Path):
                 line = " ".join(f"{l}^{e}" for l, e in sorted(r.items()))
                 w.write(line)
                 w.write("\n")
-            print(f"{len(rels)} relations written to", w.name)
+            logging.info(f"{len(rels)} relations written to {w.name}")
 
     return rels
 
@@ -365,9 +372,5 @@ def main():
         for l in f:
             rels.append([int(x) for x in l.split()])
         logging.info(f"Imported {len(rels)} relations")
-        pruned, _ = prune2(rels, 0, 0)
-
-        # for r in pruned:
-        #    print(r)
-
+        pruned, _ = step_prune(rels, 0, 0, pathlib.Path(args.DATADIR))
         step_filter(pruned, pathlib.Path(args.DATADIR))
