@@ -1,5 +1,6 @@
 import argparse
 import logging
+import tempfile
 
 from . import gpu
 from . import sieve
@@ -25,9 +26,8 @@ def main():
         help="Number of GPUs (usually a divisor of THREADS)",
     )
     argp.add_argument("N", type=int)
-    argp.add_argument("OUTDIR")
+    argp.add_argument("OUTDIR", nargs="?")
     args = argp.parse_args()
-    args.DATADIR = args.OUTDIR
     args.bench = False
 
     logging.getLogger().setLevel(logging.INFO)
@@ -35,6 +35,18 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
 
     logging.info(f"Running on device {gpu.device_name()}")
+
+    if args.OUTDIR is None:
+        logging.info(f"Creating temporary directory for results")
+        with tempfile.TemporaryDirectory(prefix="pyroclastic") as tmpdir:
+            args.OUTDIR = tmpdir
+            args.DATADIR = args.OUTDIR
+            main_impl(args)
+    else:
+        main_impl(args)
+
+
+def main_impl(args):
     sieve.main_impl(args)
     linalg.main_impl(args)
 
