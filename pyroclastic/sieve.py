@@ -437,6 +437,7 @@ def main():
         "-j",
         metavar="THREADS",
         type=int,
+        default=2,
         help="Number of CPU threads (and parallel GPU jobs)",
     )
     argp.add_argument(

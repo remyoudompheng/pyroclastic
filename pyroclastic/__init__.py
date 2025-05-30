@@ -1,6 +1,7 @@
 import argparse
 import logging
 
+from . import gpu
 from . import sieve
 from . import linalg
 
@@ -13,6 +14,7 @@ def main():
         "-j",
         metavar="THREADS",
         type=int,
+        default=2,
         help="Number of CPU threads (and parallel GPU jobs)",
     )
     argp.add_argument(
@@ -32,6 +34,7 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    logging.info(f"Running on device {gpu.device_name()}")
     sieve.main_impl(args)
     linalg.main_impl(args)
 

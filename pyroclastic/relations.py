@@ -293,6 +293,17 @@ def step_filter(rels, datadir: pathlib.Path):
     def score_final(r):
         return sum(abs(e) for p, e in r.items() if p not in dense)
 
+    # Deduplicate before final step
+    dedup = set()
+    for ridx, r in enumerate(rels):
+        if r is None:
+            continue
+        line = " ".join(f"{l}^{e}" for l, e in sorted(r.items()))
+        if line in dedup:
+            logging.warn("Found duplicate relation after filtering")
+            rels[ridx] = None
+        dedup.add(line)
+
     if excess > MIN_EXCESS:
         # scores = [(len(r), ridx) for ridx, r in enumerate(rels) if r is not None]
         scores = [
@@ -318,6 +329,7 @@ def step_filter(rels, datadir: pathlib.Path):
     print(
         f"Final: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={dt:.1f}s"
     )
+
     if datadir is not None:
         # Dump result
         with open(datadir / "relations.removed", "w") as w:
@@ -331,10 +343,6 @@ def step_filter(rels, datadir: pathlib.Path):
         with open(datadir / "relations.filtered", "w") as w:
             for r in rels:
                 line = " ".join(f"{l}^{e}" for l, e in sorted(r.items()))
-                if line in seen:
-                    print("WARNING: duplicate relation after filtering")
-                    continue
-                seen.add(line)
                 w.write(line)
                 w.write("\n")
             print(f"{len(rels)} relations written to", w.name)

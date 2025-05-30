@@ -184,7 +184,7 @@ class CSRMatrix:
             word_t = np.uint32
         mgr = self.mgr
         dim = self.dim
-        assert dim >= 256
+        #assert dim >= 256
         if dim < 5000:
             BATCHSIZE = 64
         elif dim < 10000:
@@ -200,8 +200,8 @@ class CSRMatrix:
         SEL_BLOCK = 256
         sel = np.zeros(dim // SEL_BLOCK // 8 * 8 + 16, dtype=np.uint8)
         for i in range(len(sel)):
-            # always zero on last workgroup
-            sel[i] = random.randrange(SEL_BLOCK)
+            if i * SEL_BLOCK < dim:
+                sel[i] = random.randrange(min(dim - i * SEL_BLOCK, SEL_BLOCK))
         xsel = mgr.tensor_t(sel.view(np.uint32))
         # Output sequence out[k] = S M^k V
         xout = mgr.tensor_t(np.zeros(MODULI * ITERS, dtype=np.uint64).view(np.uint32))
@@ -256,15 +256,20 @@ class CSRMatrix:
         speed = ITERS * MODULI / gpu_dt
 
         dets = []
+        ls_good = []
         for i, li in enumerate(ls):
             sequence = [int(x) % li for x in vout[:, i]]
 
             poly = flint_extras.berlekamp_massey(sequence, li)
             assert len(poly) <= dim + 1, len(poly)
             # polys.append(poly)
-            assert len(poly) == dim + 1
+            if len(poly) <= dim:
+                logging.error(f"Skip modulus {li}, minimal polynomial has degree {len(poly)-1} < {dim}")
+                continue
+            assert len(poly) == dim + 1, len(poly)
             det = -poly[0] * pow(poly[dim], -1, li) % li
             dets.append(det)
+            ls_good.append(li)
             if check:
                 assert check_wiedemann(sequence, poly, li)
                 assert len(poly) == dim + 1, len(poly)
@@ -278,7 +283,7 @@ class CSRMatrix:
         logging.info(
             f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
-        return dets, ls
+        return dets, ls_good
 
     def matmul_small(self, l: int, v):
         "For testing"
@@ -763,6 +768,8 @@ def detz(subrels, threads):
     BATCH_SIZE = 64
     if dim >= 16384 and not gpu.is_discrete_gpu():
         BATCH_SIZE = 32
+    if dim <= 2048:
+        BATCH_SIZE = 16
 
     if gpu.has_fast_add64():
         # Use 64-bit moduli (2.3x larger) when possible
@@ -771,7 +778,9 @@ def detz(subrels, threads):
         max_mod = (2**63) // norm
     else:
         max_mod = (2**31) // norm
-    moduli = [x for x in range(max_mod - 2**20, max_mod) if flint.fmpz(x).is_prime()]
+
+    # Determinant is never larger than O(dim) bits
+    moduli = [x for x in range(max_mod - 100 * dim, max_mod) if flint.fmpz(x).is_prime()]
     logging.debug(f"Prepared {len(moduli)} small prime moduli for determinant")
 
     margs = (dense, plus, minus, basis, weight)
@@ -863,14 +872,18 @@ def main_impl(args):
     dim = len(basis1)
 
     bigdets = []
-    for _ in range(2):
+    while len(bigdets) < 2:
         print(f"Truncating to square matrix (dim {dim})")
         while True:
             subrels = random.sample(rels, dim)
             if len(basis1) == len(set(p for r in subrels for p, e in r.items() if e)):
                 break
 
-        bigdets.append(detz(subrels, threads=args.j))
+        detM = detz(subrels, threads=args.j)
+        if detM == 0:
+            logging.error("Matrix has zero determinant, trying again")
+            continue
+        bigdets.append(detM)
 
     d1, d2 = bigdets
     d = int(flint.fmpz(d1).gcd(flint.fmpz(d2)))
