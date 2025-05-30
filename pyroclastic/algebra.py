@@ -28,6 +28,16 @@ def primebase(N, B):
             pass
 
 
+def is_probable_class_number(D, h):
+    # Check primes up to approx. the Bach bound (assuming GRH)
+    for l, _ in primebase(D, max(1000, 12 * D.bit_length() ** 2)):
+        ql = flint_extras.qfb.prime_form(D, l)
+        if (ql**h).q()[0] != 1:
+            return False
+
+    return True
+
+
 def h_approx(D, B=1_000_000):
     """
     Compute lower/upper bounds for

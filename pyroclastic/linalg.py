@@ -896,7 +896,12 @@ def main_impl(args):
     k2 = int(math.ceil(d / h_app * 1.05)) + 10
     for k in range(k1, k2):
         if d % k == 0 and 0.8 < d / k / h_app < 1.2:
-            print("Possible class number", d // k)
+            h = d // k
+            ok = algebra.is_probable_class_number(D, h)
+            if ok:
+                logging.info(f"Found class number {h=}")
+            else:
+                logging.debug(f"Rejected candidate h={h}")
 
 
 def bench(rels):
