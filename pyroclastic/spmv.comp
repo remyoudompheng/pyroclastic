@@ -54,7 +54,8 @@ void main() {
   uint off1 = ((idx & 1) == 0) ? N : 0;
   uint p = moduli[0];
   uint row = gl_GlobalInvocationID.x;
-  if (row >= N) return;
+  if (row >= N)
+    return;
   int acc = 0;
   // Dense block
   uint dense_base = row * DENSE_N;
@@ -64,21 +65,33 @@ void main() {
   // +1 coefficients
   uint plus0 = idxPlus[row];
   uint plus1 = idxPlus[row + 1];
+  uint base = 0;
   for (uint i = plus0; i < plus1; i++) {
-    acc += int(v[off0 + plus[i]]);
+    uint c = plus[i];
+    if (N >= 0xffff && c == 0xffff) {
+      base += 0xffff;
+      continue;
+    }
+    acc += int(v[off0 + base + c]);
   }
   // -1 coefficients
   uint minus0 = idxMinus[row];
   uint minus1 = idxMinus[row + 1];
+  base = 0;
   for (uint i = minus0; i < minus1; i++) {
-    acc -= int(v[off0 + minus[i]]);
+    uint c = minus[i];
+    if (N >= 0xffff && c == 0xffff) {
+      base += 0xffff;
+      continue;
+    }
+    acc -= int(v[off0 + base + c]);
   }
   // Output result to next row
   acc = fastmod(acc, p);
   v[off1 + row] = uint(acc);
   barrier();
   if (gl_LocalInvocationID.x == 0)
-	  iter[gl_WorkGroupID.x] = idx + 1;
+    iter[gl_WorkGroupID.x] = idx + 1;
   if (gl_LocalInvocationID.x == wsel[gl_WorkGroupID.x])
-	  atomicAdd(wout[idx], acc);
+    atomicAdd(wout[idx], acc);
 }

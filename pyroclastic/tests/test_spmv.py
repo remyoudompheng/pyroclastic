@@ -91,6 +91,31 @@ def init_random_matrix():
             return MATRIX
 
 
+MATRIX_LARGE = None
+
+
+def random_matrix_large():
+    global MATRIX_LARGE
+    if MATRIX_LARGE is not None:
+        return MATRIX_LARGE
+
+    basis = [p for p, _ in algebra.primebase(-1, 2000_000)]
+    print("dim", len(basis))
+    rels = []
+    for j in range(len(basis)):
+        rel = {}
+        rel[basis[j]] = 1
+        bits = random.getrandbits(130)
+        for i, l in enumerate(random.sample(basis[:30], 20)):
+            rel[l] = -1 if (bits >> i) & 1 else 1
+        for i, l in enumerate(random.sample(basis[50:], 30)):
+            rel[l] = -1 if (bits >> (30 + i)) & 1 else 1
+        rels.append(rel)
+
+    MATRIX_LARGE = (rels, basis)
+    return MATRIX_LARGE
+
+
 def test_spmv():
     rows, basis = init_random_matrix()
     dim = len(rows)
@@ -109,6 +134,28 @@ def test_spmv():
     m2 = linalg_alt.SpMV(dense, plus, minus, basis2, weight)
     mv2 = m2.mulvec(v2, 65537)
     print(mv2)
+    print((mv1 - mv2).nonzero())
+    assert np.all(mv1 == mv2)
+
+
+def test_spmv_large():
+    rows, basis = random_matrix_large()
+    dim = len(rows)
+
+    v = np.random.randint(0, 65537, dim, dtype=np.int32)
+    mv1 = ref_matmul(rows, basis, v) % 65537
+    assert mv1.shape == (dim,), mv1.shape
+    print(mv1)
+
+    idx1 = {p: i for i, p in enumerate(basis)}
+
+    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
+    m2 = linalg_alt.SpMV(dense, plus, minus, basis, weight)
+    mv2 = m2.mulvec(v2, 65537)
+    print(mv2)
+    if not np.all(mv1 == mv2):
+        print("diff at", (mv1 - mv2).nonzero())
     assert np.all(mv1 == mv2)
 
 
@@ -170,6 +217,25 @@ def test_blockcoo3():
     basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
     v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
     m6 = linalg.BlockCOO(dense, plus, minus, basis, weight)
-    mv6 = m6.mulvec(65537, v2)
+    mv6 = m6.mulvec(v2, 65537)
     print(mv6)
     assert np.all(mv1 == mv6)
+
+
+def test_blockcoo3_large():
+    rows, basis = random_matrix_large()
+    dim = len(rows)
+
+    v = np.random.randint(0, 65537, dim, dtype=np.int32)
+    mv1 = ref_matmul(rows, basis, v) % 65537
+    assert mv1.shape == (dim,), mv1.shape
+    print(mv1)
+
+    idx1 = {p: i for i, p in enumerate(basis)}
+
+    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
+    m2 = linalg.BlockCOO(dense, plus, minus, basis, weight)
+    mv2 = m2.mulvec(v2, 65537)
+    print(mv2)
+    assert np.all(mv1 == mv2)

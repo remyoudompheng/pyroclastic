@@ -99,6 +99,8 @@ def to_sparse_matrix(rels):
                 row_p.extend(e * [idx])
             else:
                 row_m.extend(-e * [idx])
+        row_p.sort()
+        row_m.sort()
         plus.append(row_p)
         minus.append(row_m)
     return primes, dense, plus, minus, max(norm_plus, norm_minus)
@@ -546,7 +548,7 @@ class BlockCOO:
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
         )
 
-    def mulvec(self, l: int, vi):
+    def mulvec(self, vi, l: int):
         BM = self.BM
         MODULI = 1
         if l.bit_length() > 32:
@@ -912,6 +914,8 @@ def main_impl(args):
 
 def bench(rels):
     from .linalg_alt import SpMV
+
+    random.seed(42)
 
     basis1 = sorted(set(p for r in rels for p, e in r.items() if e))
     dim = len(basis1)

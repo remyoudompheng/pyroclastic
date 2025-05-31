@@ -84,14 +84,26 @@ void main() {
   // +1 coefficients
   uint plus0 = idxPlus[row];
   uint plus1 = idxPlus[row + 1];
+  uint base = 0;
   for (uint i = plus0; i < plus1; i++) {
-    acc += WORD_T(v[off0 + MODULI * plus[i] + midx]);
+    uint c = plus[i];
+    if (N >= 0xffff && c == 0xffff) {
+      base += 0xffff;
+      continue;
+    }
+    acc += WORD_T(v[off0 + MODULI * (base + c) + midx]);
   }
   // -1 coefficients
   uint minus0 = idxMinus[row];
   uint minus1 = idxMinus[row + 1];
+  base = 0;
   for (uint i = minus0; i < minus1; i++) {
-    acc -= WORD_T(v[off0 + MODULI * minus[i] + midx]);
+    uint c = minus[i];
+    if (N >= 0xffff && c == 0xffff) {
+      base += 0xffff;
+      continue;
+    }
+    acc -= WORD_T(v[off0 + MODULI * (base + c) + midx]);
   }
   // Output result to next row
   const UWORD_T uacc = fastmod(acc, moduli[midx]);

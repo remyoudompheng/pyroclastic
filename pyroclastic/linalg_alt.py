@@ -38,9 +38,19 @@ import pyroclastic_flint_extras as flint_extras
 
 
 class SpMV:
+    """
+    A CSR encoded matrix with:
+    - a block of dense columns (int8 coefficients)
+    - an array of sparse positive rows (int16 columns indices with +1 coefficient)
+    - an array of sparse negative rows (int16 columns indices with -1 coefficient)
+
+    To support larger matrices, an index 0xffff can be inserted in sparse rows
+    to explain that following indices belong to another block of size 0xffff
+    """
+
     def __init__(self, dense, plus, minus, basis, weight, gpu_idx=0):
         dim, dense_n = dense.shape
-        assert dim < 65536
+        assert dim < 65536 * dense_n
         assert (dim * dense_n) % 4 == 0
         self.defines = {"N": dim, "DENSE_N": dense_n}
 
@@ -51,8 +61,27 @@ class SpMV:
         mgr = kp.Manager(gpu_idx)
         xd = mgr.tensor_t(dense.flatten().view(np.uint32))
 
-        rowlen_plus = [len(l) for l in plus]
-        rowlen_minus = [len(l) for l in minus]
+        # Encode rows
+        def encode_row(row):
+            "Encode row when dimension is large"
+            nonlocal dense_n, dim
+            if dim <= 0xffff:
+                return row
+            enc = []
+            base = 0
+            for x in row:
+                while x >= base + 0xFFFF:
+                    enc.append(0xFFFF)
+                    base += 0xFFFF
+                assert 0 <= x - base < 0xFFFF
+                enc.append(x - base)
+            return enc
+
+        enc_plus = [encode_row(l) for l in plus]
+        enc_minus = [encode_row(l) for l in minus]
+
+        rowlen_plus = [len(l) for l in enc_plus]
+        rowlen_minus = [len(l) for l in enc_minus]
         aidx_plus = np.cumsum(
             np.array([0] + rowlen_plus, dtype=np.uint32), dtype=np.uint32
         )
@@ -63,9 +92,9 @@ class SpMV:
         size_minus = int(aidx_minus[-1])
         aplus = np.zeros(size_plus + (size_plus & 1), dtype=np.uint16)
         aminus = np.zeros(size_minus + (size_minus & 1), dtype=np.uint16)
-        for i, l in enumerate(plus):
+        for i, l in enumerate(enc_plus):
             aplus[aidx_plus[i] : aidx_plus[i + 1]] = l
-        for i, l in enumerate(minus):
+        for i, l in enumerate(enc_minus):
             aminus[aidx_minus[i] : aidx_minus[i + 1]] = l
         # Kompute wants uint32, cast arrays to make it happy
         xplus = mgr.tensor_t(aplus.view(np.uint32))
@@ -75,6 +104,8 @@ class SpMV:
 
         self.mgr = mgr
         self.tensors = [xd, xplus, xminus, xidxp, xidxm]
+        bitsize = 32 * sum(t.size() for t in self.tensors)
+        logging.debug(f"Matrix format using {bitsize / weight:.1f} bits/coefficient")
         self.flops = 2 * dim * dense_n + size_plus + size_minus
         self.weight = weight
         logging.debug(
@@ -93,15 +124,25 @@ class SpMV:
             BATCHSIZE = 128
         else:
             BATCHSIZE = 32
+
         # Tensor holding M^k V and M^(k+1) V
         xv = mgr.tensor_t(np.zeros(dim * 2, dtype=np.uint32))
         xiter = mgr.tensor_t(np.zeros(dim // WGSIZE + 1, dtype=np.uint32))
         # Random weights S (idx such that S[idx]=1 in each workgroup)
         N_WG = (dim + WGSIZE - 1) // WGSIZE
         sel = np.zeros(N_WG // 8 * 8 + 16, dtype=np.uint8)
-        for i in range(N_WG - 1):
+        if N_WG == 1:
+            sel[0] = random.randrange(dim)
+        elif N_WG < 10:
             # always zero on last workgroup
-            sel[i] = random.randrange(WGSIZE)
+            for i in range(N_WG - 1):
+                sel[i] = random.randrange(WGSIZE)
+        else:
+            # very sparse weights to avoid overflow
+            assert WGSIZE < 255
+            sel.fill(255)
+            for i in random.sample(list(range(N_WG - 1)), 8):
+                sel[i] = random.randrange(WGSIZE)
         xsel = mgr.tensor_t(sel.view(np.uint32))
         # Output sequence out[k] = S M^k V
         ITERS = (2 * dim // BATCHSIZE + 2) * BATCHSIZE
@@ -202,7 +243,9 @@ class SpMV:
         # Random weights S (idx such that S[idx]=1 in each workgroup)
         N_WG = (dim + BATCH_ROW - 1) // BATCH_ROW
         sel = np.zeros(N_WG // 8 * 8 + 16, dtype=np.uint8)
-        if N_WG < 10:
+        if N_WG == 1:
+            sel[0] = random.randrange(dim)
+        elif N_WG < 10:
             # always zero on last workgroup
             for i in range(N_WG - 1):
                 sel[i] = random.randrange(BATCH_ROW)
