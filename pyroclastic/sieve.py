@@ -169,7 +169,7 @@ def expand_polys(N: int, A: int, Bi: list[int]):
     return polys
 
 
-def build_relation(value, idx, facs, B1=None, B2=None, NLARGE=2):
+def build_relation(value, idx, facs, B1=None, B2=None):
     row = []
     v = value
     assert v > 0
@@ -183,18 +183,16 @@ def build_relation(value, idx, facs, B1=None, B2=None, NLARGE=2):
             v //= f
     if v == 1:
         return row
-    if v > B2**NLARGE:
-        return None
-    cofacs = flint.fmpz(v).factor_smooth(bits=20)
+    cofacs = flint.fmpz(v).factor_smooth(bits=B2.bit_length() if B2 else 20)
     for _p, _e in cofacs:
-        if _p < B1:
-            pass
-            # logging.error(f"WARNING: uncaught small prime {_p}")
+        if not flint.fmpz(_p).is_prime():
+            return None
+        # logging.error(f"WARNING: uncaught small prime {_p}")
         row.extend(_e * [_p])
     return row
 
 
-def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, NLARGE, OUTSTRIDE):
+def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, OUTSTRIDE):
     if isinstance(bout, bytes):
         vout = np.frombuffer(bout, dtype=np.int32)
         vfacs = np.frombuffer(bfacs, dtype=np.uint32)
@@ -216,7 +214,7 @@ def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, NLARGE, OUTSTRIDE):
             u = 2 * _A * x + _B
             assert u * u == 4 * A * v + N
             # In the class group: (A, B, C) * (v, u, A) == 1
-            row = build_relation(v, x, _facs, B1=B1, B2=B2, NLARGE=NLARGE)
+            row = build_relation(v, x, _facs, B1=B1, B2=B2)
             if row is None or any(_r > B2 for _r in row):
                 # factors too large
                 continue
@@ -280,16 +278,13 @@ PARAMS2 = (
     (320, 400_000, 25, 1, 25, 12, 14, 2),
     (340, 600_000, 25, 1, 25, 12, 16, 2),
     (360, 1000_000, 25, 1, 25, 12, 18, 2),
-    (380, 1500_000, 25, 1, 25, 12, 20, 2),
-    (400, 2000_000, 25, 1, 25, 12, 24, 2),
-)
-
-# Triple large prime
-PARAMS3 = (
-    (360, 500_000, 50, 2, 55, 12, 18, 2),  # too slow
-    (380, 750_000, 50, 1, 45, 12, 12, 2),
-    (400, 1000_000, 50, 1, 50, 12, 24, 2),
-    (500, 7000_000, 200, 1, 70, 12, 16, 2),
+    (380, 1500_000, 30, 1, 30, 12, 20, 2),
+    (400, 2000_000, 40, 1, 30, 12, 24, 2),
+    (420, 2500_000, 50, 1, 35, 12, 28, 2),
+    (440, 3000_000, 55, 1, 35, 12, 30, 2),
+    (460, 4000_000, 60, 1, 40, 12, 36, 2),
+    (480, 6000_000, 80, 1, 45, 12, 48, 2),
+    (500, 8000_000, 100, 1, 50, 12, 64, 2),
 )
 
 
@@ -299,15 +294,13 @@ def get_params(N: int, bias: float = None):
         sz -= 2.5 * bias
     res = None
     if sz < 200:
-        PARAMS, nlarge = PARAMS1, 1
-    elif sz < 450:
-        PARAMS, nlarge = PARAMS2, 2
+        PARAMS = PARAMS1
     else:
-        PARAMS, nlarge = PARAMS3, 3
+        PARAMS = PARAMS2
     for p in PARAMS:
         if p[0] <= sz:
             res = p
-    return res[1:] + (nlarge,)
+    return res[1:]
 
 
 # At most 2 GPU jobs at a time
@@ -414,7 +407,6 @@ class Siever:
         BLEN = self.wargs["BLEN"]
         OUTSTRIDE = self.wargs["OUTSTRIDE"]
         D, B1, B2 = self.wargs["D"], self.wargs["B1"], self.wargs["B2"]
-        NLARGE = self.wargs["NLARGE"]
         A, Bi = make_poly(D, ak, self.roots_d)
         if A.bit_length() + 2 > BLEN * 32:
             logging.error(f"Skipping A={A} (too large)")
@@ -445,7 +437,7 @@ class Siever:
         vfacs = xfacs.data()
 
         nreports, rows = process_sieve_reports(
-            (A, ak, Bi), vout.astype(np.int32), vfacs, D, B1, B2, NLARGE, OUTSTRIDE
+            (A, ak, Bi), vout.astype(np.int32), vfacs, D, B1, B2, OUTSTRIDE
         )
         return dt, nreports, rows
 
@@ -499,7 +491,7 @@ def main_impl(args: argparse.Namespace):
     D = -abs(N)
     bias = smoothness_bias(D)
     logging.info(f"Sieve smoothness bias is {bias:.2f} bits")
-    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG, NLARGE = (
+    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG = (
         get_params(N, bias)
     )
     B2 = B2k * B1
@@ -570,7 +562,6 @@ def main_impl(args: argparse.Namespace):
         "D": D,
         "B1": B1,
         "B2": B2,
-        "NLARGE": NLARGE,
         "AFACS": AFACS,
         "BLEN": BLEN,
         "POLYS_PER_WG": POLYS_PER_WG,
