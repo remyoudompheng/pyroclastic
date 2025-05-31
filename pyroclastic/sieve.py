@@ -33,6 +33,7 @@ import json
 import logging
 import math
 import os
+import pathlib
 import random
 import time
 from multiprocessing import Pool, Semaphore, current_process
@@ -459,6 +460,7 @@ def main():
 
 
 def main_impl(args: argparse.Namespace):
+    logging.getLogger().setLevel(logging.INFO)
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
@@ -651,6 +653,43 @@ def main_impl(args: argparse.Namespace):
         print("...")
         for _row in results[-16:]:
             print(_row)
+
+
+def check():
+    argp = argparse.ArgumentParser()
+    argp.add_argument("DATADIR")
+    args = argp.parse_args()
+
+    logging.getLogger().setLevel(logging.INFO)
+    datadir = pathlib.Path(args.DATADIR)
+    with open(datadir / "args.json") as j:
+        clsargs = json.load(j)
+    D = clsargs["d"]
+    logging.info(f"D = {D}")
+
+    forms = {}
+
+    def ideal(p):
+        if p not in forms:
+            forms[p] = flint_extras.qfb.prime_form(D, p)
+        return forms[p]
+
+    t0 = time.monotonic()
+    count = 0
+    with open(datadir / "relations.sieve") as f:
+        for line in f:
+            row = [int(l) for l in line.split()]
+            q = ideal(1)
+            for p in row:
+                if p > 0:
+                    q = q * ideal(p)
+                else:
+                    q = q * ideal(-p) ** -1
+            # q must be the unit form
+            assert q.q()[0] == 1, (row, q)
+            count += 1
+    dt = time.monotonic() - t0
+    logging.info(f"Checked {count} relations in {dt:.3f}s")
 
 
 if __name__ == "__main__":
