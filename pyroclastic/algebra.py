@@ -29,8 +29,11 @@ def primebase(N, B):
 
 
 def is_probable_class_number(D, h):
-    # Check primes up to approx. the Bach bound (assuming GRH)
-    for l, _ in primebase(D, max(1000, 12 * D.bit_length() ** 2)):
+    # Check primes up to approx. the Grenié-Molteni experimental bound
+    for l, _ in primebase(D, max(1000, D.bit_length() ** 2 // 2)):
+        if l == 2:
+            # FIXME: prime_form is incorrect for l=2
+            continue
         ql = flint_extras.qfb.prime_form(D, l)
         if (ql**h).q()[0] != 1:
             return False
