@@ -77,7 +77,7 @@ def init_random_matrix():
     avgsize = sum(sum(math.log2(abs(p)) for p in rel) for rel in rels) / len(rels)
     print(f"Generated {len(rels)} random relations, average size {avgsize:.1f}")
 
-    pruned, _ = relations.prune2(rels, 0, 0)
+    pruned, _ = relations.step_prune(rels, 0, 0)
     result = relations.step_filter(pruned, None)
     print(result[0])
 

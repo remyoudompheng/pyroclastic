@@ -226,6 +226,7 @@ PARAMS1 = (
     # Single large prime
     # bitsize, B1, B2/B1, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG
     # Larger intervals for small inputs to avoid fixed costs
+    (0, 2000, 5, 1, -20, 6, 8, 1),
     (100, 2_000, 5, 1, -10, 6, 16, 1),
     (120, 3_000, 5, 1, -10, 7, 8, 1),
     (140, 6_000, 5, 1, -10, 8, 4, 1),
@@ -386,6 +387,9 @@ class Siever:
         D, B1, B2 = self.wargs["D"], self.wargs["B1"], self.wargs["B2"]
         NLARGE = self.wargs["NLARGE"]
         A, Bi = make_poly(D, ak, self.roots_d)
+        if A.bit_length() + 2 > BLEN * 32:
+            logging.error(f"Skipping A={A} (too large)")
+            return 1.0, 0, []
 
         xargs, xb, xout, xfacs = self.tensors
         xargs.data()[:] = to_uvec(A, BLEN)
@@ -508,7 +512,8 @@ def main_impl(args: argparse.Namespace):
         )
 
     A0 = math.isqrt(abs(D)) // (2 * M)
-    BLEN = (A0.bit_length() + 36) // 32
+    # Enforce at least 2 words, because A can grow for very small D.
+    BLEN = max(2, (A0.bit_length() + 36) // 32)
     WORKCHUNK = 2 ** (AFACS - 1)
     logging.debug(f"{AFACS} factors per A, {BLEN} words per coefficient")
 
@@ -557,7 +562,10 @@ def main_impl(args: argparse.Namespace):
     nb = 0
     done = False
 
-    TARGET_GAP = 4 * len(primes)
+    if len(primes) < 256:
+        TARGET_GAP = 64
+    else:
+        TARGET_GAP = 4 * len(primes)
     Aseen = set()
     while not done:
         As = make_a(primes, A0, AFACS, Aseen)

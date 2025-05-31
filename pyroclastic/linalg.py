@@ -784,7 +784,9 @@ def detz(subrels, threads):
         max_mod = (2**31) // norm
 
     # Determinant is never larger than O(dim) bits
-    moduli = [x for x in range(max_mod - 100 * dim, max_mod) if flint.fmpz(x).is_prime()]
+    moduli = [
+        x for x in range(max_mod - 100 * dim, max_mod) if flint.fmpz(x).is_prime()
+    ]
     logging.debug(f"Prepared {len(moduli)} small prime moduli for determinant")
 
     margs = (dense, plus, minus, basis, weight)
@@ -797,6 +799,9 @@ def detz(subrels, threads):
         for dets, mods in mat_pool.imap_unordered(
             worker_task, itertools.batched(moduli, BATCH_SIZE)
         ):
+            if not mods:
+                logging.error(f"Unable to apply Wiedemann algorithm, bailing out")
+                return 0
             detmod, mod = update_crt(detmod, mod, dets, mods)
             dt = time.monotonic() - t0
             done += len(mods)
@@ -871,9 +876,14 @@ def main_impl(args):
     basis1 = sorted(set(p for r in rels for p, e in r.items() if e))
     dim = len(basis1)
 
+    # Compute at precision 0.01-0.001
+    h_app = algebra.h_approx(D, 100 * max(100, D.bit_length()) ** 2)
+    logging.info(f"Using approximate class number {h_app}")
+
     bigdets = []
-    while len(bigdets) < 2:
-        print(f"Truncating to square matrix (dim {dim})")
+    d = 0
+    while d == 0 or d > 10000 * h_app:
+        logging.info(f"Selecting new square submatrix (dim {dim})")
         while True:
             subrels = random.sample(rels, dim)
             if len(basis1) == len(set(p for r in subrels for p, e in r.items() if e)):
@@ -884,14 +894,10 @@ def main_impl(args):
             logging.error("Matrix has zero determinant, trying again")
             continue
         bigdets.append(detM)
+        d = int(flint.fmpz(d).gcd(flint.fmpz(detM)))
+        if len(bigdets) > 1:
+            logging.info(f"Multiple of group order {d}")
 
-    d1, d2 = bigdets
-    d = int(flint.fmpz(d1).gcd(flint.fmpz(d2)))
-    logging.info(f"Multiple of group order {d}")
-
-    # Compute at precision 0.01-0.001
-    h_app = algebra.h_approx(D, 100 * D.bit_length() ** 2)
-    logging.info(f"Using approximate class number {h_app}")
     k1 = max(1, int(math.floor(d / h_app * 0.95)) - 10)
     k2 = int(math.ceil(d / h_app * 1.05)) + 10
     for k in range(k1, k2):
