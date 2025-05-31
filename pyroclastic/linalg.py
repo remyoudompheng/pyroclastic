@@ -749,7 +749,7 @@ def worker_init(*initargs):
     dim = len(initargs[1])
     proc = current_process()
     gpu_idx = proc._identity[-1] % len(GPU_LOCK)
-    if gpu.is_discrete_gpu() and dim < 65536:
+    if gpu.is_discrete_gpu():
         # Simple CSR kernel is always faster on dGPU
         WORKER_M = linalg_alt.SpMV(*initargs, gpu_idx=gpu_idx)
     elif dim < gpu.max_shmem() // 4:
