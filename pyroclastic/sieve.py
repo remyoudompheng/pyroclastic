@@ -52,6 +52,32 @@ SEGMENT_SIZE = 16384
 SUBSEGMENT_SIZE = 8192
 
 
+def smoothness_bias(D: int):
+    """
+    The average amount of extra bits in the smooth part
+    """
+    match D % 8:
+        case 1:
+            b = 1
+        case 5:
+            b = 0
+        case 0:
+            b = -0.5
+        case 4:
+            b = -0.5
+        case _:
+            raise ValueError("invalid quadratic discriminant")
+
+    for p in algebra.smallprimes(1000):
+        if p < 3:
+            continue
+        legendre = pow(D, p // 2, p)
+        if legendre == p - 1:
+            legendre = -1
+        b += legendre * math.log2(p) / float(p)
+    return b
+
+
 def product(l: list[int]):
     p = l[0]
     for x in l[1:]:
@@ -267,8 +293,10 @@ PARAMS3 = (
 )
 
 
-def get_params(N: int):
+def get_params(N: int, bias: float = None):
     sz = N.bit_length()
+    if bias:
+        sz -= 2.5 * bias
     res = None
     if sz < 200:
         PARAMS, nlarge = PARAMS1, 1
@@ -468,8 +496,11 @@ def main_impl(args: argparse.Namespace):
         GPU_LOCK.append(Semaphore(2))
 
     N = args.N
+    D = -abs(N)
+    bias = smoothness_bias(D)
+    logging.info(f"Sieve smoothness bias is {bias:.2f} bits")
     B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG, NLARGE = (
-        get_params(N)
+        get_params(N, bias)
     )
     B2 = B2k * B1
     M = ITERS * SEGMENT_SIZE // 2
@@ -478,7 +509,6 @@ def main_impl(args: argparse.Namespace):
         N.bit_length() // 2 + M.bit_length() - 2 * B1.bit_length() - EXTRA_THRESHOLD
     )
 
-    D = -abs(N)
     del N
 
     primes = []
