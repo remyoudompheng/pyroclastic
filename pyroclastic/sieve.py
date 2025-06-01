@@ -168,6 +168,12 @@ def expand_polys(N: int, A: int, Bi: list[int]):
     return polys
 
 
+def expand_one_poly(N: int, A: int, Bi: list[int], idx: int):
+    B = Bi[0] + sum(-bi if idx & (1 << i) else bi for i, bi in enumerate(Bi[1:]))
+    C = (B**2 - N) // (4 * A)
+    return A, B, C
+
+
 def build_relation(value, idx, facs, B1=None, B2=None):
     row = []
     v = value
@@ -201,11 +207,15 @@ def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, OUTSTRIDE):
     reports = 0
     results = []
     A, ak, Bi = ABi
-    for _i, (_A, _B, _C) in enumerate(expand_polys(N, A, Bi)):
+    for _i in range(1 << (len(Bi)-1)):
+        poly = None
         for _j in range(OUTSTRIDE):
             oidx = OUTSTRIDE * _i + _j
             if not vout[oidx] and not vfacs[32 * oidx]:
                 break
+            if poly is None:
+                poly = expand_one_poly(N, A, Bi, _i)
+            _A, _B, _C = poly
             reports += 1
             x = int(vout[oidx])
             _facs = [int(_f) for _f in vfacs[32 * oidx : 32 * oidx + 32] if _f]
