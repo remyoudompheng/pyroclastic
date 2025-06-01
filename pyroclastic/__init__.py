@@ -5,6 +5,7 @@ import tempfile
 from . import gpu
 from . import sieve
 from . import linalg
+from . import groupstruct
 
 
 def main():
@@ -43,12 +44,14 @@ def main():
             args.DATADIR = args.OUTDIR
             main_impl(args)
     else:
+        args.DATADIR = args.OUTDIR
         main_impl(args)
 
 
 def main_impl(args):
     sieve.main_impl(args)
     linalg.main_impl(args)
+    groupstruct.main_impl(args)
 
 
 if __name__ == "__main__":

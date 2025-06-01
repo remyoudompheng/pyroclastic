@@ -908,6 +908,8 @@ def main_impl(args):
             ok = algebra.is_probable_class_number(D, h)
             if ok:
                 logging.info(f"Found class number {h=}")
+                with open(datadir / "classnumber", "w") as f:
+                    print(h, file=f)
             else:
                 logging.debug(f"Rejected candidate h={h}")
 

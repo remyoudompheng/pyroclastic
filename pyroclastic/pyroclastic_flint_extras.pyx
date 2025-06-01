@@ -82,6 +82,7 @@ cdef extern from "flint/qfb.h":
 
     void qfb_init(qfb_t q)
     void qfb_clear(qfb_t q)
+    int qfb_equal(qfb_t a, qfb_t b)
     void qfb_discriminant(fmpz_t D, qfb_t f)
     void qfb_reduce(qfb_t r, qfb_t f, fmpz_t D)
     void qfb_nucomp(qfb_t r, const qfb_t f, const qfb_t g, fmpz_t D, fmpz_t L)
@@ -135,6 +136,15 @@ cdef class qfb:
 
     def __repr__(self):
         return f"qfb{self.q()}"
+
+    def __eq__(self, other):
+        if self is other:
+            return True
+
+        if isinstance(other, qfb):
+            return bool(qfb_equal(self.val, (<qfb>other).val))
+
+        return False
 
     def q(self):
         cdef char *cstr
