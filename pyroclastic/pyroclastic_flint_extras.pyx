@@ -15,6 +15,12 @@ cdef extern from "flint/fmpz.h":
     ctypedef ulong flint_bitcnt_t
     ctypedef ulong * nn_ptr
 
+cdef extern from "flint/flint.h":
+    ctypedef struct nmod_t:
+        mp_limb_t n
+        mp_limb_t ninv
+        flint_bitcnt_t norm
+
 ctypedef long fmpz_struct
 ctypedef fmpz_struct fmpz_t[1]
 
@@ -24,6 +30,53 @@ cdef extern from "flint/fmpz.h":
     char * fmpz_get_str(char * str, int b, const fmpz_t f)
     void fmpz_abs(fmpz_t f1, const fmpz_t f2)
     int fmpz_root(fmpz_t r, const fmpz_t f, slong n)
+
+cdef extern from "flint/fmpz_mod_types.h":
+    ctypedef struct fmpz_mod_ctx_struct:
+        fmpz_t n
+        void * add_fxn
+        void * sub_fxn
+        void * mul_fxn
+        nmod_t mod
+        ulong n_limbs[3]
+        ulong ninv_limbs[3]
+        void * ninv_huge
+
+    ctypedef fmpz_mod_ctx_struct fmpz_mod_ctx_t[1]
+
+    ctypedef struct fmpz_mod_poly_struct:
+        fmpz_struct * coeffs
+        slong alloc
+        slong length
+
+    ctypedef fmpz_mod_poly_struct fmpz_mod_poly_t[1]
+
+cdef extern from "flint/fmpz_mod.h":
+    void fmpz_mod_ctx_init(fmpz_mod_ctx_t ctx, const fmpz_t n)
+    void fmpz_mod_ctx_clear(fmpz_mod_ctx_t ctx)
+
+cdef extern from "flint/fmpz_mod_poly.h":
+    ctypedef struct fmpz_mod_berlekamp_massey_struct:
+        slong npoints
+        fmpz_mod_poly_t R0
+        fmpz_mod_poly_t R1
+        fmpz_mod_poly_t V0
+        fmpz_mod_poly_t V1
+        fmpz_mod_poly_t qt
+        fmpz_mod_poly_t rt
+        fmpz_mod_poly_t points
+
+    ctypedef fmpz_mod_berlekamp_massey_struct fmpz_mod_berlekamp_massey_t[1]
+
+    slong fmpz_mod_poly_degree(const fmpz_mod_poly_t poly, const fmpz_mod_ctx_t ctx)
+    void fmpz_mod_poly_get_coeff_fmpz(fmpz_t x, const fmpz_mod_poly_t poly, slong n, const fmpz_mod_ctx_t ctx)
+
+    void fmpz_mod_berlekamp_massey_init(fmpz_mod_berlekamp_massey_t B, const fmpz_mod_ctx_t ctx)
+    void fmpz_mod_berlekamp_massey_clear(fmpz_mod_berlekamp_massey_t B, const fmpz_mod_ctx_t ctx)
+    void fmpz_mod_berlekamp_massey_add_point(fmpz_mod_berlekamp_massey_t B, const fmpz_t a, const fmpz_mod_ctx_t ctx)
+    int fmpz_mod_berlekamp_massey_reduce(fmpz_mod_berlekamp_massey_t B, const fmpz_mod_ctx_t ctx)
+    const fmpz_mod_poly_struct * fmpz_mod_berlekamp_massey_V_poly(const fmpz_mod_berlekamp_massey_t B)
+
 
 cdef extern from "flint/flint.h":
     ctypedef struct nmod_t:
@@ -58,14 +111,8 @@ cdef extern from "flint/nmod_poly.h":
 
     void nmod_berlekamp_massey_init(nmod_berlekamp_massey_t B, ulong p)
     void nmod_berlekamp_massey_clear(nmod_berlekamp_massey_t B)
-    void nmod_berlekamp_massey_start_over(nmod_berlekamp_massey_t B)
-    void nmod_berlekamp_massey_set_prime(nmod_berlekamp_massey_t B, ulong p)
-    void nmod_berlekamp_massey_add_points(nmod_berlekamp_massey_t B, const ulong * a, slong count)
-    void nmod_berlekamp_massey_add_zeros(nmod_berlekamp_massey_t B, slong count)
     void nmod_berlekamp_massey_add_point(nmod_berlekamp_massey_t B, ulong a)
     int nmod_berlekamp_massey_reduce(nmod_berlekamp_massey_t B)
-    slong nmod_berlekamp_massey_point_count(const nmod_berlekamp_massey_t B)
-    const ulong * nmod_berlekamp_massey_points(const nmod_berlekamp_massey_t B)
     const nmod_poly_struct * nmod_berlekamp_massey_V_poly(const nmod_berlekamp_massey_t B)
     const nmod_poly_struct * nmod_berlekamp_massey_R_poly(const nmod_berlekamp_massey_t B)
 
@@ -93,7 +140,8 @@ cdef extern from "flint/qfb.h":
     int qfb_is_primitive(qfb_t f)
     void qfb_prime_form(qfb_t r, fmpz_t D, fmpz_t p)
 
-def berlekamp_massey(seq: list, p: int) -> list:
+def berlekamp_massey(seq: list[int], p: int) -> list[int]:
+    assert all(x < 2**64 for x in seq)
     cdef nmod_berlekamp_massey_t B
     cdef ulong pi = p
     cdef ulong xi
@@ -103,12 +151,43 @@ def berlekamp_massey(seq: list, p: int) -> list:
         nmod_berlekamp_massey_add_point(B, xi)
     nmod_berlekamp_massey_reduce(B)
 
-    cdef nmod_poly_struct *v = nmod_berlekamp_massey_V_poly(B)
+    cdef const nmod_poly_struct *v = nmod_berlekamp_massey_V_poly(B)
     cdef slong deg = nmod_poly_degree(v)
     res = []
     for i from 0 <= i <= deg:
         res.append(nmod_poly_get_coeff_ui(v, i))
     nmod_berlekamp_massey_clear(B)
+    return res
+
+def berlekamp_massey_big(seq: list[int], p: int) -> list[int]:
+    pz = flint.fmpz(p)
+
+    cdef fmpz_mod_ctx_t ctx;
+    fmpz_mod_ctx_init(ctx, (<fmpz>pz).val);
+
+    cdef fmpz_mod_berlekamp_massey_t B
+    cdef fmpz xi
+    fmpz_mod_berlekamp_massey_init(B, ctx)
+    for x in seq:
+        xi = <fmpz>flint.fmpz(x)
+        fmpz_mod_berlekamp_massey_add_point(B, xi.val, ctx)
+    fmpz_mod_berlekamp_massey_reduce(B, ctx)
+
+    cdef const fmpz_mod_poly_struct *v = fmpz_mod_berlekamp_massey_V_poly(B)
+    cdef slong deg = fmpz_mod_poly_degree(v, ctx)
+    res = []
+    # Extract coefficients by converting to string
+    cdef fmpz_t c
+    cdef char *cstr
+    fmpz_init(c)
+    for i from 0 <= i <= deg:
+        fmpz_mod_poly_get_coeff_fmpz(c, v, i, ctx)
+        cstr = fmpz_get_str(NULL, 16, c)
+        a = int((<bytes>cstr).decode(), 16)
+        free(cstr)
+        res.append(a)
+    fmpz_mod_berlekamp_massey_clear(B, ctx)
+    fmpz_mod_ctx_clear(ctx)
     return res
 
 def sqrtmod(a: int, p: int):
