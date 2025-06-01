@@ -12,10 +12,10 @@ import json
 import logging
 import math
 import pathlib
+import random
 import time
 
 import flint
-from . import algebra
 import pyroclastic_flint_extras as flint_extras
 
 
@@ -38,10 +38,15 @@ def main_impl(args):
         h = int(f.read())
     logging.info(f"{h =}")
 
+    rels = []
     primes = set()
     with open(datadir / "relations.filtered") as f:
-        for line in f:
-            primes.update(abs(int(l.partition("^")[0])) for l in line.split())
+        for l in f:
+            facs = l.split()
+            rel = {int(p): int(e) for p, _, e in (f.partition("^") for f in facs)}
+            primes.update(rel)
+            rels.append(rel)
+    logging.info(f"Imported {len(rels)} relations")
     primes = sorted(primes)
     logging.info(f"Basis has {len(primes)} primes")
 
@@ -52,21 +57,25 @@ def main_impl(args):
     for p, k in sorted(factors):
         p, k = int(p), int(k)
         logging.info(f"Class number factor {p}^{k}")
-        if p**k * len(primes) > 1e15:
+        t0 = time.monotonic()
+        # This is fast enough if p^k = O(log(D)^2 P) where P = len(primes)
+        if p**k < len(primes) ** 3:
+            # Complexity O(max(P, sqrt(pk P)))
+            pk, logs = coord_hashtable(D, h, p, p**k, primes)
+        elif k == 1:
+            # Complexity O(weight * P^2)
+            pk, logs = coord_linalg_slow(D, h, p, primes, rels)
+        else:
             logging.warning(f"Skip {p}^{k}")
             partial = True
             continue
-        t0 = time.monotonic()
-        # This is fast enough if p^k = O(log(D)^2 len(primes))
-        pk, logs = coord_hashtable(D, h, p, p**k, primes)
         dt = time.monotonic() - t0
         assert len(logs) == len(primes)
         logging.info(f"Coordinates computed in {dt:.3f}s")
         gfactors += list(pk)
         dlogs.append(logs)
 
-    print("Invariants")
-    print(" ".join(str(f) for f in gfactors))
+    print("Invariants", gfactors)
     for lidx, l in enumerate(primes):
         vlog = []
         for d in dlogs:
@@ -157,6 +166,74 @@ def coord_hashtable(D, h, p, pk, primes):
             dlogs.append((dl,))
 
         return (pk,), dlogs
+
+
+def coord_linalg_slow(D: int, h: int, p: int, primes: list[int], rels: list[dict]):
+    """
+    Compute discrete logarithms modulo p using the Wiedemann algorithm.
+
+    This function is written in pure Python and is provided for reference only.
+    """
+    # Only support prime order subgroups
+    prime_idx = {p: idx for idx, p in enumerate(primes)}
+    mat = [
+        (
+            [(prime_idx[p], e) for p, e in r.items() if abs(e) != 1],
+            [prime_idx[p] for p, e in r.items() if e == 1],
+            [prime_idx[p] for p, e in r.items() if e == -1],
+        )
+        for r in rels
+    ]
+
+    def mulmv(mat: list[(list, list, list)], v: list):
+        return [
+            sum(e * v[i] for i, e in rowd)
+            + sum(v[i] for i in rowp)
+            - sum(v[i] for i in rowm)
+            for rowd, rowp, rowm in mat
+        ]
+
+    dim = len(mat)
+    idx = [random.randrange(dim) for _ in range(4)]
+    v = [random.randrange(p) for _ in range(dim)]
+    seq = [sum(v[i] for i in idx)]
+    for _ in range(2 * dim + 32):
+        v = mulmv(mat, v)
+        seq.append(sum(v[i] for i in idx))
+
+    # The minimal polynomial is a[i] X^i + ... + a[D] X^D with i > 0
+    poly = flint_extras.berlekamp_massey_big(seq, p)
+    assert any(ai != 0 for ai in poly)
+    assert len(poly) <= dim + 1 and poly[0] == 0
+
+    # Build kernel vector
+    i0 = next(i for i, ai in enumerate(poly) if ai)
+    ker = dim * [0]
+    wi = [random.randrange(p) for _ in range(dim)]
+    for i, ai in enumerate(poly[i0:]):
+        for j in range(dim):
+            ker[j] += ai * wi[j]
+        wi = mulmv(mat, wi)
+        for j in range(dim):
+            wi[j] %= p
+
+    # Truncate to expected dimension
+    # and normalize coefficient
+    ker = [ki % p for ki in ker[: len(primes)]]
+    assert any(ker[i] for i in range(dim))
+
+    k0 = next(ki for ki in ker if ki != 0)
+    k0inv = pow(k0, -1, p)
+    for i, ki in enumerate(ker):
+        ker[i] = ki * k0inv % p
+
+    # Validate result
+    mk = mulmv(mat, ker)
+    for i in range(dim):
+        mk[i] %= p
+    assert all(mk[i] == 0 for i in range(dim))
+
+    return (p,), [(ki,) for ki in ker]
 
 
 if __name__ == "__main__":
