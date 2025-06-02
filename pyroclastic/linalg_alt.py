@@ -65,7 +65,7 @@ class SpMV:
         def encode_row(row):
             "Encode row when dimension is large"
             nonlocal dense_n, dim
-            if dim <= 0xffff:
+            if dim <= 0xFFFF:
                 return row
             enc = []
             base = 0
@@ -125,8 +125,15 @@ class SpMV:
         else:
             BATCHSIZE = 32
 
+        if l.bit_length() >= 24:
+            INT64 = True
+            word_t = np.uint64
+        else:
+            INT64 = False
+            word_t = np.uint32
+
         # Tensor holding M^k V and M^(k+1) V
-        xv = mgr.tensor_t(np.zeros(dim * 2, dtype=np.uint32))
+        xv = mgr.tensor_t(np.zeros(dim * 2, dtype=word_t).view(np.uint32))
         xiter = mgr.tensor_t(np.zeros(dim // WGSIZE + 1, dtype=np.uint32))
         # Random weights S (idx such that S[idx]=1 in each workgroup)
         N_WG = (dim + WGSIZE - 1) // WGSIZE
@@ -147,10 +154,13 @@ class SpMV:
         # Output sequence out[k] = S M^k V
         ITERS = (2 * dim // BATCHSIZE + 2) * BATCHSIZE
         xout = mgr.tensor_t(np.zeros(ITERS, dtype=np.uint64).view(np.uint32))
-        xmod = mgr.tensor_t(np.array([l], dtype=np.uint32))
+        xmod = mgr.tensor_t(np.array([l], dtype=word_t).view(np.uint32))
 
         xd, xplus, xminus, xidxp, xidxm = self.tensors
-        kernel = gpu.compile("spmv.comp", self.defines)
+        defines = self.defines
+        if INT64:
+            defines |= {"INT64": 1}
+        kernel = gpu.compile("spmv.comp", defines)
         algo = mgr.algorithm(
             [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xsel, xout, xmod],
             kernel,
@@ -166,9 +176,10 @@ class SpMV:
             .eval()
         )
 
-        v = np.random.randint(0, l, dim, dtype=np.int32)
-        xv.data()[:dim] = v
-        sequence = []
+        v = np.random.randint(0, l, dim, dtype=word_t)
+        xv.data().view(word_t)[:dim] = v
+        seq0 = sum(v[i * WGSIZE + sel[i]] for i in range(N_WG) if sel[i] < WGSIZE)
+
         mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (
@@ -191,10 +202,11 @@ class SpMV:
 
             stamps = seq.get_timestamps()
             gpu_ticks += stamps[-1] - stamps[0]
+            mgr.sequence().record(kp.OpTensorSyncLocal([xiter])).eval()
 
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
         vout = xout.data().view(np.uint64)
-        sequence = [int(x) % l for x in vout]
+        sequence = [seq0] + [int(x) % l for x in vout]
 
         dt = time.monotonic() - t0
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
@@ -202,6 +214,7 @@ class SpMV:
         speed = ITERS / gpu_dt
 
         poly = flint_extras.berlekamp_massey(sequence, l)
+        assert len(poly) <= dim + 1, len(poly)
         if check:
             assert linalg.check_wiedemann(sequence, poly, l)
             assert len(poly) == dim + 1, len(poly)
@@ -341,19 +354,46 @@ class SpMV:
         return dets, ls
 
     def mulvec(self, v, l: int):
+        result = None
+
+        def func(i, x):
+            nonlocal result
+            if i == 1:
+                result = np.copy(x)
+
+        self.mulvec_iter(v, l, 2, func)
+        return result
+
+    def mulvec_iter(self, v, l: int, maxpow: int, callback):
+        """
+        Iterate over powers M^k V for k in range(maxpow)
+        and call callback(k, M^k V) on each vector. The callback receives
+        a borrowed reference to the vector and should copy
+        data if required.
+        """
         mgr = self.mgr
         dim = self.dim
         WGSIZE = 128
 
-        kernel = gpu.compile("spmv.comp", self.defines)
+        if l.bit_length() >= 24:
+            INT64 = True
+            word_t = np.uint64
+        else:
+            INT64 = False
+            word_t = np.uint32
 
-        xv = mgr.tensor_t(np.zeros(2 * dim, dtype=np.uint32))
-        xv.data()[:dim] = v
+        defines = self.defines
+        if INT64:
+            defines |= {"INT64": 1}
+        kernel = gpu.compile("spmv.comp", defines)
+
+        xv = mgr.tensor_t(np.zeros(2 * dim, dtype=word_t).view(np.uint32))
+        xv.data().view(word_t)[:dim] = v
 
         xd, xplus, xminus, xidxp, xidxm = self.tensors
         xiter = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
         xout = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
-        xmod = mgr.tensor_t(np.array([l], dtype=np.uint32))
+        xmod = mgr.tensor_t(np.array([l], dtype=word_t).view(np.uint32))
 
         algo = mgr.algorithm(
             [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xout, xmod],
@@ -367,12 +407,21 @@ class SpMV:
                     [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
                 )
             )
-            .record(kp.OpAlgoDispatch(algo))
-            .record(kp.OpTensorSyncLocal([xv]))
             .eval()
         )
-
-        return np.copy(xv.data()[dim:])
+        callback(0, v)
+        for i in range(1, maxpow):
+            (
+                mgr.sequence()
+                .record(kp.OpAlgoDispatch(algo))
+                .record(kp.OpTensorSyncLocal([xv]))
+                .eval()
+            )
+            vv = xv.data().view(word_t)
+            if i % 2 == 1:
+                callback(i, vv[dim:])
+            else:
+                callback(i, vv[:dim])
 
     def mulvec_big(self, v, p: int) -> list[int]:
         mgr = self.mgr

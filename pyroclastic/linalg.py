@@ -37,7 +37,7 @@ from . import relations
 import pyroclastic_flint_extras as flint_extras
 
 
-def to_sparse_matrix(rels):
+def to_sparse_matrix(rels, square=True):
     stats = {}
     for r in rels:
         for p in r:
@@ -77,8 +77,12 @@ def to_sparse_matrix(rels):
 
     dense_set = frozenset(dense_p)
     primes = dense_p + sorted(p for p in stats if p not in dense_set)
-    dim = len(primes)
-    assert dim == len(rels)
+    if square:
+        dim = len(primes)
+        assert dim == len(rels)
+    else:
+        dim = len(rels)
+        assert dim >= len(primes)
     # col_density = np.array([stats[p] / len(rels) for p in primes])
     # with np.printoptions(precision=5):
     #    print("Column densities (dense)")
@@ -108,7 +112,7 @@ def to_sparse_matrix(rels):
 
 def check_wiedemann(sequence, poly, p):
     # Check polynomial
-    if p.bit_length() < 32:
+    if (p * p * len(poly)).bit_length() < 64:
         poly_v = np.array(poly, dtype=np.uint64)
         conv = np.convolve(
             np.array(sequence, dtype=np.uint64),
