@@ -40,7 +40,6 @@ from multiprocessing import Pool, Semaphore, current_process
 
 import numpy as np
 import kp
-import tqdm
 import flint
 
 import pyroclastic_flint_extras as flint_extras
@@ -321,6 +320,7 @@ class Siever:
         ITERS = wargs["ITERS"]
         THRESHOLD = wargs["THRESHOLD"]
         OUTSTRIDE = wargs["OUTSTRIDE"]
+        DEBUG = wargs.get("DEBUG")
 
         self.roots_d = {p: r for p, r in zip(primes, roots)}
 
@@ -329,7 +329,8 @@ class Siever:
         self.stampPeriod = gpu.stamp_period()
 
         proc = current_process()
-        self.gpu_idx = proc._identity[-1] % len(GPU_LOCK)
+        proc_id = proc._identity or (0,)
+        self.gpu_idx = proc_id[-1] % len(GPU_LOCK)
         mgr = kp.Manager(self.gpu_idx)
         gpu_name = mgr.get_device_properties().get("device_name", "unknown")
         logging.info(f"Worker {proc.name} running on GPU {self.gpu_idx} ({gpu_name})")
@@ -361,6 +362,14 @@ class Siever:
 
         self.tensors = (xargs, xb, xout, xfacs)
 
+        # Output buffer to receive full sieve results.
+        xdebug = None
+        if DEBUG:
+            logging.debug("sieve debug output enabled")
+            xdebug = mgr.tensor_t(
+                np.zeros(WORKCHUNK * ITERS * SEGMENT_SIZE // 4, dtype=np.uint32)
+            )
+
         mem_main = 4 * (xp.size() + xr.size() + xn.size() + xout.size() + xfacs.size())
         mem_huge = 4 * xhuge.size()
         mem_huge_avg = int(mem_huge * AVG_BUCKET_SIZE / BUCKET_SIZE)
@@ -387,7 +396,8 @@ class Siever:
                 "ITERS": ITERS,
                 "THRESHOLD": THRESHOLD,
                 "OUTSTRIDE": OUTSTRIDE,
-            },
+            }
+            | ({"DEBUG": 1} if DEBUG else {}),
         )
 
         self.mgr = mgr
@@ -397,13 +407,12 @@ class Siever:
             workgroup=(len(primes) // 512 + 1, 1, 1),
         )
         self.algo2 = mgr.algorithm(
-            [xp, xr, xhuge, xout, xfacs],
+            [xp, xr, xhuge, xout, xfacs] + ([xdebug] if xdebug else []),
             SHADER,
             workgroup=(WORKCHUNK // POLYS_PER_WG, 1, 1),
         )
 
     def process(self, ak):
-        AFACS = self.wargs["AFACS"]
         BLEN = self.wargs["BLEN"]
         OUTSTRIDE = self.wargs["OUTSTRIDE"]
         D, B1, B2 = self.wargs["D"], self.wargs["B1"], self.wargs["B2"]
@@ -411,6 +420,19 @@ class Siever:
         if A.bit_length() + 2 > BLEN * 32:
             logging.error(f"Skipping A={A} (too large)")
             return 1.0, 0, []
+
+        dt = self._run(ak, A, Bi)
+        _, _, xout, xfacs = self.tensors
+        vout = xout.data()
+        vfacs = xfacs.data()
+        nreports, rows = process_sieve_reports(
+            (A, ak, Bi), vout.astype(np.int32), vfacs, D, B1, B2, OUTSTRIDE
+        )
+        return dt, nreports, rows
+
+    def _run(self, ak, A, Bi):
+        AFACS = self.wargs["AFACS"]
+        BLEN = self.wargs["BLEN"]
 
         xargs, xb, xout, xfacs = self.tensors
         xargs.data()[:] = to_uvec(A, BLEN)
@@ -432,14 +454,7 @@ class Siever:
         # Get GPU results (round to 0.5 tick if ticks are zero)
         stamps = seq.get_timestamps()
         dt = max(0.5, stamps[-1] - stamps[0]) * self.stampPeriod * 1e-9
-
-        vout = xout.data()
-        vfacs = xfacs.data()
-
-        nreports, rows = process_sieve_reports(
-            (A, ak, Bi), vout.astype(np.int32), vfacs, D, B1, B2, OUTSTRIDE
-        )
-        return dt, nreports, rows
+        return dt
 
 
 SIEVER = None
@@ -491,8 +506,8 @@ def main_impl(args: argparse.Namespace):
     D = -abs(N)
     bias = smoothness_bias(D)
     logging.info(f"Sieve smoothness bias is {bias:.2f} bits")
-    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG = (
-        get_params(N, bias)
+    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG = get_params(
+        N, bias
     )
     B2 = B2k * B1
     M = ITERS * SEGMENT_SIZE // 2
