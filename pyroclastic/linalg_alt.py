@@ -382,29 +382,13 @@ class SpMV:
         xiter = mgr.tensor_t(np.zeros(N_WG, dtype=np.uint32))
         # Output sequence out[k] = S M^k V
         xout = mgr.tensor_t(np.zeros(ITERS * BLEN, dtype=np.uint32))
-        xmod = mgr.tensor_t(np.array(pwords, dtype=np.uint32).view(np.uint32))
+        xmod = mgr.tensor_t(np.array(pwords, dtype=np.uint32))
 
-        xd, xplus, xminus, xidxp, xidxm = self.tensors
-        algo = mgr.algorithm(
-            self.tensors + [xv, xiter, xout, xmod],
-            kernel,
-            workgroup=(N_WG, 1, 1),
-        )
-        (
-            mgr.sequence()
-            .record(kp.OpTensorSyncDevice(self.tensors + [xv, xiter, xout, xmod]))
-            .eval()
-        )
+        tensors = self.tensors + [xv, xiter, xmod, xout]
+        algo = mgr.algorithm(tensors, kernel, workgroup=(N_WG, 1, 1))
+        mgr.sequence().record(kp.OpTensorSyncDevice(tensors)).eval()
 
         seq0 = from_uvec(v[0, 0, :])
-        mat_size = 4 * (
-            xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
-        )
-        vec_size = 4 * xv.size()
-        logging.debug(
-            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
-        )
-
         t0 = time.monotonic()
         gpu_ticks = 0.0
         for i in range(0, ITERS, BATCHSIZE):
@@ -441,6 +425,77 @@ class SpMV:
         )
 
         return poly
+
+    def polyeval(self, v, l: int, poly: list[int]) -> list[int]:
+        """
+        Compute poly(M)*v mod l
+        """
+        WGSIZE = 128
+        mgr = self.mgr
+        dim = self.dim
+        assert dim >= 256
+        N_WG = (dim + WGSIZE - 1) // WGSIZE
+        BATCHSIZE = 16
+
+        # FIXME: use actual norm
+        BLEN = (l.bit_length() + 8 + 31) // 32
+        maxout = l * l * len(poly)
+        ALEN = (maxout.bit_length() + 4 + 31) // 32
+        pwords = to_uvec(l, BLEN)
+        assert pwords[-2] > 2**16
+
+        defines = self.defines | {"ALEN": ALEN, "BLEN": BLEN, "POLYEVAL": 1}
+        kernel = gpu.compile("spmv_bigint.comp", defines)
+
+        # Tensor holding M^k V and M^(k+1) V
+        av = np.zeros((2, dim, BLEN), dtype=np.uint32)
+        for i in range(dim):
+            av[0, i, :] = to_uvec(v[i], BLEN)
+        xv = mgr.tensor_t(av.flatten())
+        xiter = mgr.tensor_t(np.zeros(N_WG, dtype=np.uint32))
+        xmod = mgr.tensor_t(np.array(pwords, dtype=np.uint32))
+        vpoly = np.zeros((len(poly), BLEN), dtype=np.uint32)
+        for k, ak in enumerate(poly):
+            vpoly[k, :] = to_uvec(ak, BLEN)
+        xpoly = mgr.tensor_t(vpoly.flatten())
+        # Output sequence out[k] = S M^k V, initialize with a0 * v
+        vout = np.zeros((dim, ALEN), dtype=np.uint32)
+        for i, vi in enumerate(v):
+            vout[i, :] = to_uvec(poly[0] * vi, ALEN)
+        xout = mgr.tensor_t(vout.flatten())
+
+        tensors = self.tensors + [xv, xiter, xmod, xpoly, xout]
+        mgr.sequence().record(kp.OpTensorSyncDevice(tensors)).eval()
+        algo = mgr.algorithm(tensors, kernel, workgroup=(N_WG, 1, 1))
+
+        t0 = time.monotonic()
+        gpu_ticks = 0.0
+        count = 0
+        for i in range(1, len(poly), BATCHSIZE):
+            # Matrix multiplication is very fast so we launch multiple
+            # iterations per batch.
+            seq = mgr.sequence(total_timestamps=2 * BATCHSIZE)
+            for _ in range(min(BATCHSIZE, len(poly) - i)):
+                count += 1
+                seq.record(kp.OpAlgoDispatch(algo))
+            seq.eval()
+
+            stamps = seq.get_timestamps()
+            gpu_ticks += stamps[-1] - stamps[0]
+        assert count == len(poly) - 1
+
+        dt = time.monotonic() - t0
+        gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
+        flops = self.flops * len(poly) / gpu_dt
+        speed = len(poly) / gpu_dt
+
+        mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
+        vout = xout.data().reshape((dim, ALEN))
+        dt = time.monotonic() - t0
+        logging.info(
+            f"Polyeval completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+        )
+        return [from_uvec(vout[i, :]) % l for i in range(dim)]
 
     def mulvec(self, v, l: int):
         result = None

@@ -266,24 +266,9 @@ def coord_linalg_gpu(D: int, h: int, p: int, primes: list[int], rels: list[dict]
 
     i0 = next(i for i, ai in enumerate(poly) if ai)
     logging.info(f"Polynomial is divisible by X^{i0}")
-    kerv = flint.fmpz_mat([dim * [0]])
     wi = [random.randrange(p) for _ in range(dim)]
     poly_k = poly[i0:]
-
-    # FIXME: move to GPU
-    def accum(k, mkv):
-        nonlocal kerv
-        # assert k < len(poly_k) and len(mkv) == dim, len(mkv)
-        # assert 0 <= mkv[j] < 2 * p, hex(mkv[j])
-        ak = poly_k[k]
-        kerv += ak * flint.fmpz_mat([mkv])
-
-    if p.bit_length() < 56:
-        M.mulvec_iter(wi, p, len(poly_k), accum)
-    else:
-        M.mulvec_big_iter(wi, p, len(poly_k), accum)
-
-    ker = [kerv[0, i] % p for i in range(dim)]
+    ker = M.polyeval(wi, p, poly_k)
     assert any(k for k in ker)
 
     # Normalize kernel vector

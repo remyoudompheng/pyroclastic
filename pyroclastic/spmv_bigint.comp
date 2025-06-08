@@ -39,10 +39,18 @@ layout(binding = 4) readonly buffer IdxMinus { uint idxMinus[]; };
 layout(binding = 5) buffer V { uint[BLEN] v[]; };
 // Vector of identical values (1 per workgroup) indicating iteration count
 layout(binding = 6) buffer Iter { uint iter[]; };
+layout(binding = 7) readonly buffer P { uint[BLEN] p; };
+#ifdef POLYEVAL
+// Polynomial sum(ak X^k)
+layout(binding = 8) readonly buffer Poly { uint[BLEN] ak[]; };
+// Output sum(ak M^k V) where coefficients are not reduced modulo p.
+// The upper bound for values is deg(Poly)·p²
+layout(binding = 9) coherent buffer Wout { uint[ALEN] wout[]; };
+#else
 // Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
 // wsel[idx]=1)
-layout(binding = 7) coherent buffer Wout { uint[BLEN] wout[]; };
-layout(binding = 8) readonly buffer P { uint[BLEN] p; };
+layout(binding = 8) coherent buffer Wout { uint[BLEN] wout[]; };
+#endif
 
 // Big integer arithmetic. We need:
 // - addition
@@ -111,8 +119,8 @@ void modp(inout uint[BLEN] x) {
   mul_small(tmp, p, q);
   sub(x, tmp);
   // x may become negative
-  if (int(x[BLEN-1]) < 0) {
-	  add(x, p);
+  if (int(x[BLEN - 1]) < 0) {
+    add(x, p);
   }
 }
 
@@ -162,10 +170,32 @@ void main() {
   // Output result to next row
   modp(acc);
   v[off1 + row] = acc;
-  barrier();
-  if (gl_LocalInvocationID.x == 0)
-    iter[gl_WorkGroupID.x] = idx + 1;
+#ifdef POLYEVAL
+  // wout[row] += ak[idx+1] * acc
+  uint[ALEN] w = wout[row];
+  for (uint i = 0; i < BLEN; i++) {
+    uint aki = ak[idx + 1][i];
+    // w += aki * W^i * acc
+    uint carry = 0;
+    for (uint j = 0; j < BLEN; j++) {
+      if (i + j >= ALEN)
+        break;
+      uint64_t wij = uint64_t(aki) * uint64_t(acc[j]) + w[i + j] + carry;
+      w[i + j] = uint(wij);
+      carry = uint(wij >> 32);
+    }
+    // w[i+BLEN:] += carry
+    for (uint j = i + BLEN; j < ALEN; j++) {
+      w[j] = uaddCarry(w[j], carry, carry);
+    }
+  }
+  wout[row] = w;
+#else
   // FIXME: we cannot atomically add, the output sequence is: just v[0]
   if (gl_GlobalInvocationID.x == 0)
     wout[idx] = acc;
+#endif
+  barrier();
+  if (gl_LocalInvocationID.x == 0)
+    iter[gl_WorkGroupID.x] = idx + 1;
 }
