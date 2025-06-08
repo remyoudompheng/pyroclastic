@@ -1,6 +1,6 @@
 // Variant of spmv.comp for computations modulo a large integer.
 //
-// BLEN is such that 2^(32 BLEN) is larger than N p
+// BLEN is such that 2^(32 BLEN - 1) is larger than N p
 // where N is the norm of the matrix.
 //
 // Assumption: p[BLEN-2] > 2^16 (it should be larger than 2^32 / N)
@@ -110,6 +110,10 @@ void modp(inout uint[BLEN] x) {
   int16_t q = divp(x);
   mul_small(tmp, p, q);
   sub(x, tmp);
+  // x may become negative
+  if (int(x[BLEN-1]) < 0) {
+	  add(x, p);
+  }
 }
 
 void main() {

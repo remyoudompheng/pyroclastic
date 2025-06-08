@@ -202,7 +202,6 @@ class SpMV:
 
             stamps = seq.get_timestamps()
             gpu_ticks += stamps[-1] - stamps[0]
-            mgr.sequence().record(kp.OpTensorSyncLocal([xiter])).eval()
 
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
         vout = xout.data().view(np.uint64)
@@ -353,6 +352,96 @@ class SpMV:
         )
         return dets, ls
 
+    def wiedemann_big(self, l: int, check=False):
+        "Perform Wiedemann algorithm for a single big modulus"
+        WGSIZE = 128
+        mgr = self.mgr
+        dim = self.dim
+        assert dim >= 256
+        N_WG = (dim + WGSIZE - 1) // WGSIZE
+
+        if dim < 1000:
+            BATCHSIZE = 32
+        else:
+            BATCHSIZE = 64
+        ITERS = (2 * dim // BATCHSIZE + 2) * BATCHSIZE
+
+        # FIXME: use actual norm
+        BLEN = (l.bit_length() + 8 + 31) // 32
+        pwords = to_uvec(l, BLEN)
+        assert pwords[-2] > 2**16
+
+        defines = self.defines | {"BLEN": BLEN}
+        kernel = gpu.compile("spmv_bigint.comp", defines)
+
+        # Tensor holding M^k V and M^(k+1) V
+        v = np.zeros((2, dim, BLEN), dtype=np.uint32)
+        for i in range(dim):
+            v[0, i, :] = to_uvec(random.randrange(l), BLEN)
+        xv = mgr.tensor_t(v.flatten())
+        xiter = mgr.tensor_t(np.zeros(N_WG, dtype=np.uint32))
+        # Output sequence out[k] = S M^k V
+        xout = mgr.tensor_t(np.zeros(ITERS * BLEN, dtype=np.uint32))
+        xmod = mgr.tensor_t(np.array(pwords, dtype=np.uint32).view(np.uint32))
+
+        xd, xplus, xminus, xidxp, xidxm = self.tensors
+        algo = mgr.algorithm(
+            self.tensors + [xv, xiter, xout, xmod],
+            kernel,
+            workgroup=(N_WG, 1, 1),
+        )
+        (
+            mgr.sequence()
+            .record(kp.OpTensorSyncDevice(self.tensors + [xv, xiter, xout, xmod]))
+            .eval()
+        )
+
+        seq0 = from_uvec(v[0, 0, :])
+        mat_size = 4 * (
+            xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
+        )
+        vec_size = 4 * xv.size()
+        logging.debug(
+            f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
+        )
+
+        t0 = time.monotonic()
+        gpu_ticks = 0.0
+        for i in range(0, ITERS, BATCHSIZE):
+            # Matrix multiplication is very fast so we launch multiple
+            # iterations per batch.
+            seq = mgr.sequence(total_timestamps=2 * BATCHSIZE)
+            for _ in range(BATCHSIZE):
+                seq.record(kp.OpAlgoDispatch(algo))
+            seq.eval()
+
+            stamps = seq.get_timestamps()
+            gpu_ticks += stamps[-1] - stamps[0]
+
+        mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
+        vout = xout.data().reshape((ITERS, BLEN))
+        sequence = [seq0] + [from_uvec(vout[i, :]) for i in range(ITERS)]
+
+        dt = time.monotonic() - t0
+        gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
+        flops = self.flops * ITERS / gpu_dt
+        speed = ITERS / gpu_dt
+
+        poly = flint_extras.berlekamp_massey_big(sequence, l)
+        assert len(poly) <= dim + 1, len(poly)
+        if check:
+            assert linalg.check_wiedemann(sequence, poly, l)
+            assert len(poly) == dim + 1, len(poly)
+            det = -poly[0] * pow(poly[dim], -1, l) % l
+            logging.info(f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det}")
+
+        dt = time.monotonic() - t0
+        logging.info(
+            f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+        )
+
+        return poly
+
     def mulvec(self, v, l: int):
         result = None
 
@@ -395,20 +484,13 @@ class SpMV:
         xout = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
         xmod = mgr.tensor_t(np.array([l], dtype=word_t).view(np.uint32))
 
+        tensors = [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xout, xmod]
         algo = mgr.algorithm(
-            [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xout, xmod],
+            tensors,
             kernel,
             workgroup=((dim + WGSIZE - 1) // WGSIZE, 1, 1),
         )
-        (
-            mgr.sequence()
-            .record(
-                kp.OpTensorSyncDevice(
-                    [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
-                )
-            )
-            .eval()
-        )
+        mgr.sequence().record(kp.OpTensorSyncDevice(tensors)).eval()
         callback(0, v)
         for i in range(1, maxpow):
             (
@@ -423,47 +505,62 @@ class SpMV:
             else:
                 callback(i, vv[:dim])
 
-    def mulvec_big(self, v, p: int) -> list[int]:
+    def mulvec_big(self, v, l: int) -> list[int]:
+        result = None
+
+        def func(i, x):
+            nonlocal result
+            if i == 1:
+                result = x.copy()
+
+        self.mulvec_big_iter(v, l, 2, func)
+        return result
+
+    def mulvec_big_iter(self, v: list[int], l: int, maxpow: int, callback):
         mgr = self.mgr
         dim = self.dim
         WGSIZE = 128
+        N_WG = (dim + WGSIZE - 1) // WGSIZE
         # FIXME: use actual norm
-        BLEN = (p.bit_length() + 8 + 31) // 32
-        pwords = to_uvec(p, BLEN)
+        BLEN = (l.bit_length() + 8 + 31) // 32
+        pwords = to_uvec(l, BLEN)
         assert pwords[-2] > 2**16
 
         defines = self.defines | {"BLEN": BLEN}
         kernel = gpu.compile("spmv_bigint.comp", defines)
 
-        vin = np.zeros((2 * dim, BLEN), dtype=np.uint32)
+        vin = np.zeros((2, dim, BLEN), dtype=np.uint32)
         for i in range(dim):
-            vin[i, :] = to_uvec(v[i], BLEN)
+            vin[0, i, :] = to_uvec(v[i], BLEN)
         xv = mgr.tensor_t(vin.flatten())
 
         xd, xplus, xminus, xidxp, xidxm = self.tensors
-        xiter = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
-        xout = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+        xiter = mgr.tensor_t(np.zeros(N_WG, dtype=np.uint32))
+        xout = mgr.tensor_t(np.zeros(maxpow * BLEN, dtype=np.uint32))
         xmod = mgr.tensor_t(np.array(pwords, dtype=np.uint32))
 
+        tensors = [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
         algo = mgr.algorithm(
-            [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod],
+            tensors,
             kernel,
             workgroup=((dim + WGSIZE - 1) // WGSIZE, 1, 1),
         )
-        (
-            mgr.sequence()
-            .record(
-                kp.OpTensorSyncDevice(
-                    [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
-                )
-            )
-            .record(kp.OpAlgoDispatch(algo))
-            .record(kp.OpTensorSyncLocal([xv]))
-            .eval()
-        )
+        mgr.sequence().record(kp.OpTensorSyncDevice(tensors)).eval()
 
-        result = xv.data().reshape((2 * dim, BLEN))
-        return [from_uvec(result[i, :]) for i in range(dim, 2 * dim)]
+        callback(0, v)
+        for i in range(0, maxpow, 2):
+            (
+                mgr.sequence()
+                .record(kp.OpAlgoDispatch(algo))
+                .record(kp.OpAlgoDispatch(algo))
+                .record(kp.OpTensorSyncLocal([xv]))
+                .eval()
+            )
+            vv = xv.data().reshape((2, dim, BLEN))
+            if i + 1 < maxpow:
+                callback(i + 1, [from_uvec(vv[1, j, :]) for j in range(dim)])
+            if i + 2 < maxpow:
+                callback(i + 2, [from_uvec(vv[0, j, :]) for j in range(dim)])
 
 
 def to_uvec(x: int, length: int):

@@ -24,13 +24,18 @@ from . import linalg_alt
 
 def main():
     argp = argparse.ArgumentParser()
+    argp.add_argument("-v", "--verbose", action="store_true")
     argp.add_argument("DATADIR")
     args = argp.parse_args()
+
+    logging.getLogger().setLevel(logging.INFO)
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
     main_impl(args)
 
 
 def main_impl(args):
-    logging.getLogger().setLevel(logging.INFO)
     datadir = pathlib.Path(args.DATADIR)
     with open(datadir / "args.json") as j:
         clsargs = json.load(j)
@@ -67,9 +72,10 @@ def main_impl(args):
             pk, logs = coord_hashtable(D, h, p, p**k, primes)
         elif k == 1:
             # Complexity O(weight * P^2)
-            if p.bit_length() <= 56:
+            if True:
                 pk, logs = coord_linalg_gpu(D, h, p, primes, rels)
             else:
+                # Slow CPU reference implementation
                 pk, logs = coord_linalg_slow(D, h, p, primes, rels)
         else:
             logging.warning(f"Skip {p}^{k}")
@@ -243,32 +249,41 @@ def coord_linalg_slow(D: int, h: int, p: int, primes: list[int], rels: list[dict
 
 
 def coord_linalg_gpu(D: int, h: int, p: int, primes: list[int], rels: list[dict]):
-    assert p.bit_length() <= 56
-
     dim = len(primes)
-    weight = sum(len(r) for r in rels)
-    basis, dense, plus, minus, norm = linalg.to_sparse_matrix(rels, square=False)
+    # Wiedemann on a rectangular matrix does not make sense,
+    # all relations beyond matrix rank will be ignored.
+    mrels = rels[:dim]
+    weight = sum(len(r) for r in mrels)
+    basis, dense, plus, minus, norm = linalg.to_sparse_matrix(mrels)
     M = linalg_alt.SpMV(dense, plus, minus, basis, weight)
-    poly = M.wiedemann(p)
+    if p.bit_length() < 56:
+        poly = M.wiedemann(p)
+    else:
+        poly = M.wiedemann_big(p)
     poly = [ai * pow(poly[-1], -1, p) % p for ai in poly]
     assert any(ai != 0 for ai in poly)
     assert len(poly) <= dim + 1 and poly[0] == 0, (dim, len(poly), poly[0])
 
     i0 = next(i for i, ai in enumerate(poly) if ai)
     logging.info(f"Polynomial is divisible by X^{i0}")
-    ker = dim * [0]
-    wi = [random.randrange(p) for _ in rels]
+    kerv = flint.fmpz_mat([dim * [0]])
+    wi = [random.randrange(p) for _ in range(dim)]
     poly_k = poly[i0:]
 
+    # FIXME: move to GPU
     def accum(k, mkv):
-        nonlocal ker
+        nonlocal kerv
+        # assert k < len(poly_k) and len(mkv) == dim, len(mkv)
+        # assert 0 <= mkv[j] < 2 * p, hex(mkv[j])
         ak = poly_k[k]
-        for j in range(dim):
-            ker[j] += ak * int(mkv[j])
+        kerv += ak * flint.fmpz_mat([mkv])
 
-    M.mulvec_iter(wi, p, len(poly_k), accum)
+    if p.bit_length() < 56:
+        M.mulvec_iter(wi, p, len(poly_k), accum)
+    else:
+        M.mulvec_big_iter(wi, p, len(poly_k), accum)
 
-    ker = [ki % p for ki in ker[: len(primes)]]
+    ker = [kerv[0, i] % p for i in range(dim)]
     assert any(k for k in ker)
 
     # Normalize kernel vector
