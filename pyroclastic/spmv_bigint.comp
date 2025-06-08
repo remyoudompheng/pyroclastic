@@ -1,0 +1,167 @@
+// Variant of spmv.comp for computations modulo a large integer.
+//
+// BLEN is such that 2^(32 BLEN) is larger than N p
+// where N is the norm of the matrix.
+//
+// Assumption: p[BLEN-2] > 2^16 (it should be larger than 2^32 / N)
+
+#version 450
+
+#ifndef N
+#error Matrix dimension undefined
+#endif
+
+#ifndef DENSE_N
+#error Dense width undefined
+#endif
+
+#ifndef BLEN
+#error Integer size is missing
+#endif
+
+#if BLEN < 2
+#error BLEN is too small
+#endif
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+// Each thread handles a row.
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
+layout(binding = 1) readonly buffer SparsePlus { uint16_t plus[]; };
+layout(binding = 2) readonly buffer SparseMinus { uint16_t minus[]; };
+layout(binding = 3) readonly buffer IdxPlus { uint idxPlus[]; };
+layout(binding = 4) readonly buffer IdxMinus { uint idxMinus[]; };
+// Vector of size 2N:
+// even iterations do V[N:2N] = M * V[0:N]
+// odd iterations do V[0:N] = M * V[N:2N]
+layout(binding = 5) buffer V { uint[BLEN] v[]; };
+// Vector of identical values (1 per workgroup) indicating iteration count
+layout(binding = 6) buffer Iter { uint iter[]; };
+// Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
+// wsel[idx]=1)
+layout(binding = 7) coherent buffer Wout { uint[BLEN] wout[]; };
+layout(binding = 8) readonly buffer P { uint[BLEN] p; };
+
+// Big integer arithmetic. We need:
+// - addition
+// - subtraction
+// - (small) quotient by p
+// - add product by a small integer
+
+// Compute x += y
+void add(inout uint[BLEN] x, in uint[BLEN] y) {
+  uint c = 0;
+  for (uint i = 0; i < BLEN; i++) {
+    if (y[i] == -1 && c == 1) {
+      // x[i] is unchanged
+      // set c=1 for index i+1
+      continue;
+    }
+    x[i] = uaddCarry(x[i], y[i] + c, c);
+  }
+}
+
+// Compute x -= y
+void sub(inout uint[BLEN] x, in uint[BLEN] y) {
+  uint c = 0;
+  for (uint i = 0; i < BLEN; i++) {
+    if (y[i] == -1 && c == 1) {
+      // x[i] is unchanged
+      // set c=1 for index i+1
+      continue;
+    }
+    x[i] = usubBorrow(x[i], y[i] + c, c);
+  }
+}
+
+void neg(inout uint[BLEN] x) {
+  // -x = NOT(x) + 1
+  uint c = 1;
+  for (uint i = 0; i < BLEN; i++) {
+    x[i] = uaddCarry(~x[i], c, c);
+  }
+}
+
+// Compute y = x * s
+void mul_small(out uint[BLEN] y, in uint[BLEN] x, int16_t s) {
+  if (s < 0) {
+    s = -s;
+    neg(x);
+  }
+  uint c = 0;
+  for (uint i = 0; i < BLEN; i++) {
+    uint64_t xs = uint64_t(x[i]) * uint64_t(s) + uint64_t(c);
+    y[i] = uint(xs);
+    c = uint(xs >> 32);
+  }
+}
+
+int16_t divp(uint[BLEN] x) {
+  int64_t xhi = int64_t(pack64(u32vec2(x[BLEN - 2], x[BLEN - 1])));
+  int64_t phi = int64_t(pack64(u32vec2(p[BLEN - 2], p[BLEN - 1])));
+  float q = float(xhi) / float(phi);
+  return int16_t(floor(q));
+}
+
+void modp(inout uint[BLEN] x) {
+  uint[BLEN] tmp;
+  int16_t q = divp(x);
+  mul_small(tmp, p, q);
+  sub(x, tmp);
+}
+
+void main() {
+  uint idx = iter[gl_WorkGroupID.x];
+  uint off0 = ((idx & 1) == 0) ? 0 : N;
+  uint off1 = ((idx & 1) == 0) ? N : 0;
+  uint row = gl_GlobalInvocationID.x;
+  if (row >= N)
+    return;
+  uint[BLEN] acc;
+  for (uint i = 0; i < BLEN; i++)
+    acc[i] = 0;
+  uint[BLEN] tmp;
+  for (uint i = 0; i < BLEN; i++)
+    tmp[i] = 0;
+  // Dense block
+  uint dense_base = row * DENSE_N;
+  for (uint i = 0; i < DENSE_N; i++) {
+    mul_small(tmp, v[off0 + i], dense[dense_base + i]);
+    add(acc, tmp);
+  }
+  // +1 coefficients
+  uint plus0 = idxPlus[row];
+  uint plus1 = idxPlus[row + 1];
+  uint base = 0;
+  for (uint i = plus0; i < plus1; i++) {
+    uint c = plus[i];
+    if (N >= 0xffff && c == 0xffff) {
+      base += 0xffff;
+      continue;
+    }
+    add(acc, v[off0 + base + c]);
+  }
+  // -1 coefficients
+  uint minus0 = idxMinus[row];
+  uint minus1 = idxMinus[row + 1];
+  base = 0;
+  for (uint i = minus0; i < minus1; i++) {
+    uint c = minus[i];
+    if (N >= 0xffff && c == 0xffff) {
+      base += 0xffff;
+      continue;
+    }
+    sub(acc, v[off0 + base + c]);
+  }
+  // Output result to next row
+  modp(acc);
+  v[off1 + row] = acc;
+  barrier();
+  if (gl_LocalInvocationID.x == 0)
+    iter[gl_WorkGroupID.x] = idx + 1;
+  // FIXME: we cannot atomically add, the output sequence is: just v[0]
+  if (gl_GlobalInvocationID.x == 0)
+    wout[idx] = acc;
+}

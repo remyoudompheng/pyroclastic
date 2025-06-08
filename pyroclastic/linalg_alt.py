@@ -374,6 +374,57 @@ class SpMV:
 
         return np.copy(xv.data()[dim:])
 
+    def mulvec_big(self, v, p: int) -> list[int]:
+        mgr = self.mgr
+        dim = self.dim
+        WGSIZE = 128
+        # FIXME: use actual norm
+        BLEN = (p.bit_length() + 8 + 31) // 32
+        pwords = to_uvec(p, BLEN)
+        assert pwords[-2] > 2**16
+
+        defines = self.defines | {"BLEN": BLEN}
+        kernel = gpu.compile("spmv_bigint.comp", defines)
+
+        vin = np.zeros((2 * dim, BLEN), dtype=np.uint32)
+        for i in range(dim):
+            vin[i, :] = to_uvec(v[i], BLEN)
+        xv = mgr.tensor_t(vin.flatten())
+
+        xd, xplus, xminus, xidxp, xidxm = self.tensors
+        xiter = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+        xout = mgr.tensor_t(np.zeros(dim, dtype=np.uint32))
+        xmod = mgr.tensor_t(np.array(pwords, dtype=np.uint32))
+
+        algo = mgr.algorithm(
+            [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod],
+            kernel,
+            workgroup=((dim + WGSIZE - 1) // WGSIZE, 1, 1),
+        )
+        (
+            mgr.sequence()
+            .record(
+                kp.OpTensorSyncDevice(
+                    [xd, xplus, xminus, xidxp, xidxm, xv, xiter, xout, xmod]
+                )
+            )
+            .record(kp.OpAlgoDispatch(algo))
+            .record(kp.OpTensorSyncLocal([xv]))
+            .eval()
+        )
+
+        result = xv.data().reshape((2 * dim, BLEN))
+        return [from_uvec(result[i, :]) for i in range(dim, 2 * dim)]
+
+
+def to_uvec(x: int, length: int):
+    assert x.bit_length() <= 32 * length
+    return [(x >> (32 * i)) & 0xFFFFFFFF for i in range(length)]
+
+
+def from_uvec(words: list) -> int:
+    return sum(int(x) << (32 * i) for i, x in enumerate(words))
+
 
 class BlockCOO:
     def __init__(self, dense, plus, minus, basis, weight, BM=None):

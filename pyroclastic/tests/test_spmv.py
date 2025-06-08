@@ -47,6 +47,11 @@ def random_relations(N: int, primes: list, size: int, dense: list):
 
 
 def ref_matmul(rels, ps, v):
+    out = ref_matmul_big(rels, ps, v)
+    return np.array(out, dtype=np.int32)
+
+
+def ref_matmul_big(rels, ps, v) -> list:
     prime_idx = {p: idx for idx, p in enumerate(ps)}
     out = []
     for r in rels:
@@ -54,7 +59,7 @@ def ref_matmul(rels, ps, v):
         for p, e in r.items():
             x += e * v[prime_idx[p]]
         out.append(x)
-    return np.array(out, dtype=np.int32)
+    return out
 
 
 MATRIX = None
@@ -136,6 +141,30 @@ def test_spmv():
     print(mv2)
     print((mv1 - mv2).nonzero())
     assert np.all(mv1 == mv2)
+
+
+def test_spmv_big():
+    rows, basis = init_random_matrix()
+    dim = len(rows)
+
+    p = 100000000000000000000000000000049  # 107 bits
+
+    v = [random.randrange(p) for _ in range(dim)]
+    mv1 = [x % p for x in ref_matmul_big(rows, basis, v)]
+    print(mv1)
+
+    idx1 = {p: i for i, p in enumerate(basis)}
+
+    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    assert sorted(basis2) == basis
+    v2 = [v[idx1[p]] for p in basis2]
+
+    m2 = linalg_alt.SpMV(dense, plus, minus, basis2, weight)
+    mv2 = m2.mulvec_big(v2, p)
+    # Is it correct modulo p?
+    assert [x2 % p == x1 for x1, x2 in zip(mv1, mv2)]
+    # Is it already reduced modulo p?
+    assert [x2 == x1 for x1, x2 in zip(mv1, mv2)]
 
 
 def test_spmv_large():
