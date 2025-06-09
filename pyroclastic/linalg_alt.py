@@ -32,6 +32,7 @@ import time
 import kp
 import numpy as np
 
+from . import algebra
 from . import gpu
 from . import linalg
 import pyroclastic_flint_extras as flint_extras
@@ -411,7 +412,7 @@ class SpMV:
         flops = self.flops * ITERS / gpu_dt
         speed = ITERS / gpu_dt
 
-        poly = flint_extras.berlekamp_massey_big(sequence, l)
+        poly = algebra.berlekamp_massey(sequence, l)
         assert len(poly) <= dim + 1, len(poly)
         if check:
             assert linalg.check_wiedemann(sequence, poly, l)

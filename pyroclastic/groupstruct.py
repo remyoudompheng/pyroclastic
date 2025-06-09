@@ -18,6 +18,7 @@ import time
 import flint
 import pyroclastic_flint_extras as flint_extras
 
+from . import algebra
 from . import linalg
 from . import linalg_alt
 
@@ -214,7 +215,7 @@ def coord_linalg_slow(D: int, h: int, p: int, primes: list[int], rels: list[dict
         seq.append(sum(v[i] for i in idx))
 
     # The minimal polynomial is a[i] X^i + ... + a[D] X^D with i > 0
-    poly = flint_extras.berlekamp_massey_big(seq, p)
+    poly = algebra.berlekamp_massey(seq, p)
     assert any(ai != 0 for ai in poly)
     assert len(poly) <= dim + 1 and poly[0] == 0
 

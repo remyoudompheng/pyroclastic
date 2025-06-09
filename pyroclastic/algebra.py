@@ -1,5 +1,6 @@
 import math
 
+import flint
 import numpy as np
 import pyroclastic_flint_extras as flint_extras
 
@@ -39,6 +40,12 @@ def is_probable_class_number(D, h):
             return False
 
     return True
+
+
+def berlekamp_massey(seq: list[int], l: int):
+    ctx = flint.fmpz_mod_poly_ctx(l)
+    poly = ctx.minpoly(seq)
+    return [int(coef) for coef in poly]
 
 
 def h_approx(D, B=1_000_000):
