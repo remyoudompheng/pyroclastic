@@ -616,6 +616,7 @@ def main_impl(args: argparse.Namespace):
     sieved = 0
     start_time = time.monotonic()
     last_print = time.monotonic()
+    last_sieved = 0
     next_check = 0
     nb = 0
     done = False
@@ -635,7 +636,6 @@ def main_impl(args: argparse.Namespace):
                 print(" ".join(str(_x) for _x in row), file=w)
                 results.append(row)
 
-            speed = WORKCHUNK * BLOCK_SIZE / dt
             _nr = len(results)
             _np = len(all_primes)
             nb += 1
@@ -643,9 +643,11 @@ def main_impl(args: argparse.Namespace):
             avg_speed = sieved / (time.monotonic() - start_time)
             rel_speed = _nr / (time.monotonic() - start_time)
             if nb % 10 == 0 and (nb < 1000 or time.monotonic() > last_print + 1.0):
+                cur_speed = (sieved - last_sieved) / (time.monotonic() - last_print)
+                last_sieved = sieved
                 last_print = time.monotonic()
                 print(
-                    f"Chunk {nb} ({sieved / 1e6:.0f}M) done in {dt:.3f}s ({speed / 1e9:.1f}G/s avg {avg_speed / 1e9:.1f}G/s) {len(rows)}/{nreports} items (relations={_nr} [{rel_speed:.1f}/s] primes={_np} excess={_nr - _np})"
+                    f"Chunk {nb} ({sieved / 1e6:.0f}M) done in {dt:.3f}s ({cur_speed / 1e9:.1f}G/s avg {avg_speed / 1e9:.1f}G/s) {len(rows)}/{nreports} items (relations={_nr} [{rel_speed:.3g}/s] primes={_np} excess={_nr - _np})"
                 )
 
             # Check if finished
