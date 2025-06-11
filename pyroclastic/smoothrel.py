@@ -366,6 +366,7 @@ def gpu_sieve(D, p, dlogs: dict[int, any] | None = None):
 
 def main():
     argp = argparse.ArgumentParser()
+    argp.add_argument("-v", "--verbose", action="store_true")
     argp.add_argument("--algo", choices=("bmc", "cpu", "gpu"), default="gpu")
     argp.add_argument("--datadir")
     argp.add_argument("--only-small", action="store_true")
@@ -374,6 +375,8 @@ def main():
     args = argp.parse_args()
 
     logging.getLogger().setLevel(logging.INFO)
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
 
     dlogs = None
     if args.datadir:

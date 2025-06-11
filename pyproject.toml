@@ -22,10 +22,12 @@ dependencies = [
 
 [project.scripts]
 pyroclastic = "pyroclastic:main"
-pyroclastic-linalg = "pyroclastic.linalg:main"
 pyroclastic-sieve = "pyroclastic.sieve:main"
 pyroclastic-sievechk = "pyroclastic.sieve:check"
 pyroclastic-relations = "pyroclastic.relations:main"
+pyroclastic-linalg = "pyroclastic.linalg:main"
+pyroclastic-groupstruct = "pyroclastic.groupstruct:main"
+pyroclastic-smoothrel = "pyroclastic.smoothrel:main"
 
 [tool.setuptools]
 ext-modules = [{name = "pyroclastic_flint_extras", sources = ["pyroclastic/pyroclastic_flint_extras.pyx"], libraries = ["flint"]}]

@@ -10,6 +10,13 @@ quadratic fields**. It relies on the following components:
 
 It is written in Python to allow easy inspection of internal computations.
 
+Building the project requires Cython for bindings to several FLINT
+APIs which are not available in python-flint 0.7.
+
+The current implementation should be suitable for discriminants
+between 150 and 550 bits. Larger inputs may be supported depending
+on hardware, smaller inputs may be slower than equivalent CPU implementations.
+
 ## Hardware requirements
 
 Pyroclastic is written for cheap, modern consumer GPU. GPU specifications
@@ -34,6 +41,17 @@ The class group computation consists of the following steps:
    through determinants modulo small primes
 3. Class group structure, which computes matrix kernels modulo prime factors
    of the class number
+
+Each step is available as a separate command:
+
+* `pyroclastic-sieve`: performs the sieve and creates the initial relation file
+* `pyroclastic-relations`: eliminates relations to build a smaller matrix
+* `pyroclastic-linalg`: computes the class number using large determinants
+* `pyroclastic-groupstruct`: computes an explicit isomorphism with a product of cyclic groups
+
+An additional command `pyroclastic-smoothrel` can be used to compute
+coordinates for an arbitrary prime ideal. It can run quickly even with
+a low-power GPU.
 
 ## Bibliography
 
