@@ -906,16 +906,25 @@ def main_impl(args):
 
     k1 = max(1, int(math.floor(d / h_app * 0.95)) - 10)
     k2 = int(math.ceil(d / h_app * 1.05)) + 10
+    best = 999, None
     for k in range(k1, k2):
         if d % k == 0 and 0.8 < d / k / h_app < 1.2:
             h = d // k
+            # Note that is_probable_class_number only checks
+            # that h is a multiple of the exponent of the group.
+            # If the group is not cyclic, multiple values can pass this check.
             ok = algebra.is_probable_class_number(D, h)
             if ok:
-                logging.info(f"Found class number {h=}")
-                with open(datadir / "classnumber", "w") as f:
-                    print(h, file=f)
+                logging.info(f"Found probable class number {h=}")
+                if abs(h / h_app - 1.0) < best[0]:
+                    best = abs(h / h_app - 1.0), h
             else:
                 logging.debug(f"Rejected candidate h={h}")
+
+    h = best[1]
+    logging.info(f"Found class number {h=}")
+    with open(datadir / "classnumber", "w") as f:
+        print(h, file=f)
 
 
 def bench(rels):
