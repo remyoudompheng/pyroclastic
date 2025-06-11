@@ -324,13 +324,39 @@ class Siever:
         AFACS = wargs["AFACS"]
         BLEN = wargs["BLEN"]
         POLYS_PER_WG = wargs["POLYS_PER_WG"]
-        HUGE_PRIME = wargs["HUGE_PRIME"]
-        BUCKET_SIZE = wargs["BUCKET_SIZE"]
-        AVG_BUCKET_SIZE = wargs["AVG_BUCKET_SIZE"]
+        HUGE_PRIME = wargs.get("HUGE_PRIME")
+        BUCKET_SIZE = wargs.get("BUCKET_SIZE")
+        AVG_BUCKET_SIZE = wargs.get("AVG_BUCKET_SIZE")
         ITERS = wargs["ITERS"]
         THRESHOLD = wargs["THRESHOLD"]
         OUTSTRIDE = wargs["OUTSTRIDE"]
         DEBUG = wargs.get("DEBUG")
+
+        # A bucket contains offsets for a subsegment
+        if HUGE_PRIME is None:
+            BUCKET_SIZE = 1
+            AVG_BUCKET_SIZE = 0
+            HUGE_PRIME = len(primes)
+            if primes[-1] > 2 * SEGMENT_SIZE:
+                HUGE_PRIME = next(
+                    idx for idx, p in enumerate(primes) if p > 1.5 * SEGMENT_SIZE
+                )
+                if HUGE_PRIME % 512 != 84:
+                    HUGE_PRIME += (84 - HUGE_PRIME) % 512
+                    assert HUGE_PRIME % 512 == 84
+                phuge = primes[HUGE_PRIME]
+                assert phuge > 2**14
+                BUCKET_SIZE = int(
+                    SUBSEGMENT_SIZE * 0.07 * math.log2(primes[-1] / (0.8 * phuge))
+                )
+                AVG_BUCKET_SIZE = (
+                    SUBSEGMENT_SIZE * 0.055 * math.log2(primes[-1] / phuge)
+                )
+                logging.debug(
+                    f"Huge prime index {HUGE_PRIME} ({phuge}) bucket size %d expect usage %d",
+                    BUCKET_SIZE,
+                    int(AVG_BUCKET_SIZE),
+                )
 
         self.roots_d = {p: r for p, r in zip(primes, roots)}
 
@@ -547,27 +573,6 @@ def main_impl(args: argparse.Namespace):
     )
     logging.debug(f"Interval size {M // 512}k")
 
-    # A bucket contains offsets for a subsegment
-    BUCKET_SIZE = 1
-    AVG_BUCKET_SIZE = 0
-    HUGE_PRIME = len(primes)
-    if primes[-1] > 2 * SEGMENT_SIZE:
-        HUGE_PRIME = next(idx for idx, p in enumerate(primes) if p > 1.5 * SEGMENT_SIZE)
-        if HUGE_PRIME % 512 != 84:
-            HUGE_PRIME += (84 - HUGE_PRIME) % 512
-            assert HUGE_PRIME % 512 == 84
-        phuge = primes[HUGE_PRIME]
-        assert phuge > 2**14
-        BUCKET_SIZE = int(
-            SUBSEGMENT_SIZE * 0.07 * math.log2(primes[-1] / (0.8 * phuge))
-        )
-        AVG_BUCKET_SIZE = SUBSEGMENT_SIZE * 0.055 * math.log2(primes[-1] / phuge)
-        logging.debug(
-            f"Huge prime index {HUGE_PRIME} ({phuge}) bucket size %d expect usage %d",
-            BUCKET_SIZE,
-            int(AVG_BUCKET_SIZE),
-        )
-
     A0 = math.isqrt(abs(D)) // (2 * M)
     # Enforce at least 2 words, because A can grow for very small D.
     BLEN = max(2, (A0.bit_length() + 36) // 32)
@@ -598,9 +603,6 @@ def main_impl(args: argparse.Namespace):
         "AFACS": AFACS,
         "BLEN": BLEN,
         "POLYS_PER_WG": POLYS_PER_WG,
-        "HUGE_PRIME": HUGE_PRIME,
-        "BUCKET_SIZE": BUCKET_SIZE,
-        "AVG_BUCKET_SIZE": AVG_BUCKET_SIZE,
         "ITERS": ITERS,
         "THRESHOLD": THRESHOLD,
         "OUTSTRIDE": OUTSTRIDE,

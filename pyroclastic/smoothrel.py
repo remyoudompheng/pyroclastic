@@ -6,6 +6,7 @@ of small norm ideals.
 import argparse
 import logging
 import math
+import pathlib
 import random
 
 import flint
@@ -13,12 +14,13 @@ import numpy as np
 
 import pyroclastic_flint_extras as flint_extras
 from . import algebra
+from . import sieve
 
 
-def hafner_mccurley(D, p, B=None, maxiters=10_000):
+def buchmann_mccurley(D, p, B=None, maxiters=10_000):
     """
     Find a representation of [p] as a smooth ideal using
-    Hafner-McCurley algorithm
+    Buchmann-McCurley algorithm
     """
     base = [l for l, _ in algebra.primebase(D, 2 * maxiters.bit_length() * maxiters)]
     base = base[:maxiters]
@@ -41,6 +43,33 @@ def hafner_mccurley(D, p, B=None, maxiters=10_000):
             best = f1
             logging.info(f"Found factorization with bound {best[-1][0]}")
             print(best)
+
+
+def factor_q(D: int, q) -> list[tuple[int, int]]:
+    """
+    Factor an ideal represented by a binary quadratic form
+    """
+    A, B, C = q.q()
+    Af = flint.fmpz(A).factor()
+    Qf = []
+    qf = q**0
+    for l, e in Af:
+        bl = B % l
+        if l == 2 and bl & 3 != 3:
+            e = -e
+        if l != 2 and bl & 1 != D & 1:
+            e = -e
+        qf = qf * flint_extras.qfb.prime_form(D, l) ** e
+        Qf.append((int(l), int(e)))
+    assert qf.q() == q.q()
+    return Qf
+
+
+def product_q(D: int, factors: list[tuple[int, int]]):
+    q = flint_extras.qfb.prime_form(D, 1)
+    for l, e in factors:
+        q *= flint_extras.qfb.prime_form(D, l) ** e
+    return q
 
 
 def cpu_sieve(D, p, M=None, B=None):
@@ -70,31 +99,20 @@ def cpu_sieve(D, p, M=None, B=None):
     logging.info(f"Reduced p to ideal of norm {qA}")
 
     Af = flint.fmpz(qA).factor()
-    Qf = []
-    q = q0**0
-    for l, e in Af:
-        bl = qB % l
-        if l == 2 and bl & 3 != 3:
-            e = -e
-        if l != 2 and bl & 1 != D & 1:
-            e = -e
-        q = q * flint_extras.qfb.prime_form(D, l) ** e
-        Qf.append((l, e))
-    assert q.q() == q0.q(), (q0, q)
-    # print(q)
+    Qf = factor_q(D, q0)
 
     Ai = [l**e for l, e in Af]
     logging.info(f"Prime factors {Ai}")
 
     base = list(algebra.primebase(D, B))
 
-    q1 = q
+    q1 = q0
     extra = []
     target = math.isqrt(abs(D)) // M
     if qA < target // 2:
         # A is too small
         while 1000 * B * qA < target:
-            l = random.choice(base[1000 : 10000])[0]
+            l = random.choice(base[1000:10000])[0]
             q1 = q1 * flint_extras.qfb.prime_form(D, l)
             qA *= l
             extra.append((l, -1))
@@ -194,19 +212,166 @@ def cpu_sieve(D, p, M=None, B=None):
             logging.info(f"Found relation {rel_str}")
 
 
+def gpu_sieve(D, p, dlogs: dict[int, any] | None = None):
+    """
+    Find a relation by running SIQS with a forced factor.
+
+    If the input prime is too large, a first reduction pass will reduce it
+    to a smaller prime.
+    """
+    assert flint.fmpz(p).is_prime()
+    assert pow(D, p // 2, p) == 1
+
+    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG = sieve.get_params(
+        D, sieve.smoothness_bias(D)
+    )
+    B2 = B2k * B1
+    M = ITERS * sieve.SEGMENT_SIZE // 2
+    THRESHOLD = (
+        D.bit_length() // 2 + M.bit_length() - 2 * B1.bit_length() - EXTRA_THRESHOLD
+    )
+
+    sieve_params = sieve.get_params(D)
+    B1 = sieve_params[0]
+    logging.info(f"Small prime bound {B1=}")
+
+    def is_small(l):
+        if dlogs:
+            return l in dlogs
+        else:
+            return l < B1
+
+    ls, roots = [], []
+    for l, lr in algebra.primebase(D, B1):
+        ls.append(l)
+        roots.append(lr)
+
+    q0 = flint_extras.qfb.prime_form(D, p) * flint_extras.qfb.prime_form(D, 1)
+    best_large = None
+    best_rel = None
+    for l in [1] + ls:
+        if l == 2:
+            continue
+        if l == 1:
+            q = q0
+        else:
+            q = q0 * flint_extras.qfb.prime_form(D, l)
+        qA = q.q()[0]
+        Af = sorted(flint.fmpz(qA).factor())
+        # We want the largest factor to be smaller than D^1/4
+        # and the second largest factor to be among the sieving primes (smallest)
+        if any(_l.bit_length() > D.bit_length() // 6 for _l, _ in Af):
+            continue
+
+        larges = [_l for _l, _ in Af if not is_small(_l)]
+        is_better = (
+            best_large is None
+            or len(larges) < len(best_large)
+            or (len(larges) == len(best_large) and tuple(reversed(larges)) < best_large)
+        )
+        if is_better:
+            best_large = tuple(reversed(larges))
+            best_rel = (q, l)
+            logging.info(f"Good decomposition {[(l, -1)] + factor_q(D, q)}")
+
+        if len(best_large) <= 2:
+            break
+
+    ql, l = best_rel
+    qlfacs = [(l, -1)] + factor_q(D, ql)
+    assert q0 == product_q(D, qlfacs)
+    logging.info(f"Reduced to {qlfacs}")
+
+    result = {}
+    for l, e in qlfacs:
+        if is_small(l):
+            result.setdefault(l, 0)
+            result[l] += e
+            continue
+        root = flint_extras.sqrtmod(D, l)
+        # Normalize so that root has the same parity as N
+        if root & 1 != D & 1:
+            root = l - root
+
+        # Sieve to decompose l into small factors.
+        # Polynomials will use A = l * product(ai)
+        logging.info(f"Computing reduction of l={l}")
+
+        A0 = math.isqrt(abs(D)) // (2 * M)
+        BLEN = max(2, (A0.bit_length() + 36) // 32)
+        As = sieve.make_a(ls, A0 // l, AFACS - 1)
+        WARGS = {
+            "primes": ls + [l],
+            "roots": roots + [root],
+            "D": D,
+            "B1": B1,
+            "B2": B2,
+            "AFACS": AFACS,
+            "BLEN": BLEN,
+            "POLYS_PER_WG": POLYS_PER_WG,
+            "ITERS": ITERS,
+            "THRESHOLD": THRESHOLD,
+            "OUTSTRIDE": OUTSTRIDE,
+        }
+        siever = sieve.Siever(WARGS)
+        lfactors = None
+        for ak in As:
+            dt, nreports, rels = siever.process([l] + list(ak))
+            for r in rels:
+                assert l in r and r.count(l) == 1
+                if all(is_small(abs(_l)) for _l in r if _l != l):
+                    rel = [-x for x in r if x != l]
+                    logging.info(f"Found good relation {l} = {rel}")
+                    lfactors = rel
+                    break
+            if lfactors:
+                break
+
+        ql = product_q(D, [(abs(x), 1 if x > 0 else -1) for x in lfactors])
+        assert ql == flint_extras.qfb.prime_form(D, l)
+
+        for x in lfactors:
+            x, ex = abs(x), 1 if x > 0 else -1
+            result.setdefault(x, 0)
+            result[x] += e * ex
+
+    qf = product_q(D, list(result.items()))
+    assert q0 == qf
+
+    result = {l: e for l, e in result.items() if e}
+    relstr = " ".join(f"{x}^{e}" for x, e in sorted(result.items()))
+    logging.info(f"Found final decomposition {relstr}")
+    return result
+
+
 def main():
     argp = argparse.ArgumentParser()
-    argp.add_argument("--algo", choices=("hmc", "cpu"), default="cpu")
+    argp.add_argument("--algo", choices=("bmc", "cpu", "gpu"), default="gpu")
+    argp.add_argument("--datadir")
     argp.add_argument("D", type=int)
     argp.add_argument("p", type=int)
     args = argp.parse_args()
 
     logging.getLogger().setLevel(logging.INFO)
 
-    if args.algo == "hmc":
-        hafner_mccurley(args.D, args.p)
+    dlogs = None
+    if args.datadir:
+        dlogf = pathlib.Path(args.datadir) / "group.structure.extra"
+        if dlogf.is_file():
+            dlogs = {}
+            with open(dlogf) as f:
+                for line in f:
+                    l = line.split()[0]
+                    if l.isdigit():
+                        dlogs[int(l)] = line
+            logging.info(f"Read {len(dlogs)} coordinates from {dlogf}")
+
+    if args.algo == "bmc":
+        buchmann_mccurley(args.D, args.p)
     elif args.algo == "cpu":
         cpu_sieve(args.D, args.p)
+    elif args.algo == "gpu":
+        gpu_sieve(args.D, args.p, dlogs=dlogs)
 
 
 if __name__ == "__main__":
