@@ -29,6 +29,22 @@ def primebase(N, B):
             pass
 
 
+def product(l: list[int]):
+    p = l[0]
+    for x in l[1:]:
+        p *= x
+    return p
+
+
+def crt_basis(moduli):
+    m = product(moduli)
+    basis = []
+    for i, mi in enumerate(moduli):
+        c = (m // mi) * pow(m // mi, -1, mi)
+        basis.append(c)
+    return basis
+
+
 def is_probable_class_number(D, h):
     # Check primes up to approx. the Grenié-Molteni experimental bound
     for l, _ in primebase(D, max(1000, D.bit_length() ** 2 // 2)):
