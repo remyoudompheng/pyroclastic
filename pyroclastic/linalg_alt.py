@@ -118,7 +118,6 @@ class SpMV:
         WGSIZE = 128
         mgr = self.mgr
         dim = self.dim
-        assert dim >= 256
         if dim < 1000:
             BATCHSIZE = 64
         elif dim < 10000:
@@ -358,7 +357,6 @@ class SpMV:
         WGSIZE = 128
         mgr = self.mgr
         dim = self.dim
-        assert dim >= 256
         N_WG = (dim + WGSIZE - 1) // WGSIZE
 
         if dim < 1000:
@@ -434,7 +432,6 @@ class SpMV:
         WGSIZE = 128
         mgr = self.mgr
         dim = self.dim
-        assert dim >= 256
         N_WG = (dim + WGSIZE - 1) // WGSIZE
         BATCHSIZE = 16
 
