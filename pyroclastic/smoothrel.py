@@ -8,6 +8,7 @@ import logging
 import math
 import pathlib
 import random
+import time
 
 import flint
 import numpy as np
@@ -49,10 +50,14 @@ def factor_q(D: int, q) -> list[tuple[int, int]]:
     """
     Factor an ideal represented by a binary quadratic form
     """
-    A, B, C = q.q()
+    if isinstance(q, tuple):
+        A, B, C = q
+    else:
+        A, B, C = q.q()
+    assert B * B - 4 * A * C == D
     Af = flint.fmpz(A).factor()
     Qf = []
-    qf = q**0
+    qf = flint_extras.qfb.prime_form(D, 1)
     for l, e in Af:
         bl = B % l
         if l == 2 and bl & 3 != 3:
@@ -61,7 +66,8 @@ def factor_q(D: int, q) -> list[tuple[int, int]]:
             e = -e
         qf = qf * flint_extras.qfb.prime_form(D, l) ** e
         Qf.append((int(l), int(e)))
-    assert qf.q() == q.q()
+    # input form is possibly not reduced.
+    #assert qf.q() == (A, B, C)
     return Qf
 
 
@@ -70,6 +76,36 @@ def product_q(D: int, factors: list[tuple[int, int]]):
     for l, e in factors:
         q *= flint_extras.qfb.prime_form(D, l) ** e
     return q
+
+
+def _sieve(D: int, roots, ABC: tuple[int, int, int], M: int) -> list[int]:
+    I = np.zeros(2 * M + 1, dtype=np.uint8)
+    qA, qB, qC = ABC
+    # don't sieve 4 tiny primes
+    for l, r in roots[4:]:
+        logp = l.bit_length() - 1
+        if qA % l == 0:
+            if qB % l == 0:
+                # no root
+                continue
+            r1 = (-qC * pow(qB, -1, l) + M) % l
+            I[r1::l] += logp
+        else:
+            ainv = pow(2 * qA, -1, l)
+            r1 = ((r - qB) * ainv + M) % l
+            r2 = ((-r - qB) * ainv + M) % l
+            I[r1::l] += logp
+            if r1 != r2:
+                I[r2::l] += logp
+
+    logging.info(f"Maximum sieve result {np.max(I)}")
+    threshold = np.max(I) * 2 // 3
+    candidates = []
+    for idx in (I > threshold).nonzero()[0]:
+        candidates.append((-int(I[idx]), idx - M))
+    candidates.sort()
+    logging.info(f"{len(candidates)} best sieve results (score >= {threshold})")
+    return [int(x) for _, x in candidates]
 
 
 def cpu_sieve(D, p, M=None, B=None):
@@ -151,37 +187,13 @@ def cpu_sieve(D, p, M=None, B=None):
     qA, qB, qC = q1.q()
     logging.info(f"Sieving with extra factors {extra}")
 
-    I = np.zeros(2 * M + 1, dtype=np.uint8)
-    # don't sieve 4 tiny primes
-    for l, r in base[4:]:
-        logp = l.bit_length() - 1
-        if qA % l == 0:
-            if qB % l == 0:
-                # no root
-                continue
-            r1 = (-qC * pow(qB, -1, l) + M) % l
-            I[r1::l] += logp
-        else:
-            ainv = pow(2 * qA, -1, l)
-            r1 = ((r - qB) * ainv + M) % l
-            r2 = ((-r - qB) * ainv + M) % l
-            I[r1::l] += logp
-            if r1 != r2:
-                I[r2::l] += logp
-
-    logging.info(f"Maximum sieve result {np.max(I)}")
-    threshold = np.max(I) * 2 // 3
-    candidates = []
-    for idx in (I > threshold).nonzero()[0]:
-        candidates.append((-int(I[idx]), idx - M))
-    candidates.sort()
-    logging.info(f"{len(candidates)} best sieve results (score >= {threshold})")
+    candidates = _sieve(D, base, (qA, qB, qC), M)
 
     best = abs(p)
-    for _, x in candidates:
+    for x in candidates:
         qx = qA * x**2 + qB * x + qC
-        rel = []
         u = 2 * qA * x + qB
+        rel = []
         q = q0**0
         for l, e in flint.fmpz(qx).factor_smooth(bits=30):
             if not flint.fmpz(l).is_prime():
@@ -246,41 +258,49 @@ def gpu_sieve(D, p, dlogs: dict[int, any] | None = None):
         ls.append(l)
         roots.append(lr)
 
-    q0 = flint_extras.qfb.prime_form(D, p) * flint_extras.qfb.prime_form(D, 1)
-    best_large = None
-    best_rel = None
-    for l in [1] + ls:
-        if l == 2:
-            continue
-        if l == 1:
-            q = q0
-        else:
-            q = q0 * flint_extras.qfb.prime_form(D, l)
-        qA = q.q()[0]
-        Af = sorted(flint.fmpz(qA).factor())
-        # We want the largest factor to be smaller than D^1/4
-        # and the second largest factor to be among the sieving primes (smallest)
-        if any(_l.bit_length() > D.bit_length() // 6 for _l, _ in Af):
-            continue
+    # Perform a single small sieve to look for a good reduction.
+    t0 = time.monotonic()
+    qp = flint_extras.qfb.prime_form(D, p) * flint_extras.qfb.prime_form(D, 1)
+    if p.bit_length() < D.bit_length() // 6:
+        # already a small leading coefficient
+        qlfacs = [(p, 1)]
+    else:
+        qA, qB, qC = [int(_x) for _x in qp.q()]
+        logging
+        candidates = _sieve(D, list(zip(ls, roots)), (qA, qB, qC), int(2 * B1))
+        best_large = None
+        best_rel = None
+        for x in candidates:
+            # qp ~= (q(x), -q'(x), A)
+            rel = factor_q(
+                D, (qA * x**2 + qB * x + qC, -2 * qA * x - qB, qA)
+            )
+            assert product_q(D, rel) == qp
 
-        larges = [_l for _l, _ in Af if not is_small(_l)]
-        is_better = (
-            best_large is None
-            or len(larges) < len(best_large)
-            or (len(larges) == len(best_large) and tuple(reversed(larges)) < best_large)
-        )
-        if is_better:
-            best_large = tuple(reversed(larges))
-            best_rel = (q, l)
-            logging.info(f"Good decomposition {[(l, -1)] + factor_q(D, q)}")
+            # We want the largest factor to be smaller than D^1/4
+            # and the second largest factor to be among the sieving primes (smallest)
+            if any(_l.bit_length() > D.bit_length() // 6 for _l, _ in rel):
+                continue
 
-        if len(best_large) <= 2:
-            break
+            larges = [_l for _l, _ in rel if not is_small(_l)]
+            is_better = (
+                best_large is None
+                or len(larges) < len(best_large)
+                or (len(larges) == len(best_large) and tuple(reversed(larges)) < best_large)
+            )
+            if is_better:
+                best_large = tuple(reversed(larges))
+                best_rel = rel
+                logging.info(f"Good decomposition {rel}")
 
-    ql, l = best_rel
-    qlfacs = [(l, -1)] + factor_q(D, ql)
-    assert q0 == product_q(D, qlfacs)
-    logging.info(f"Reduced to {qlfacs}")
+            if len(best_large) <= 2:
+                break
+        qlfacs = best_rel
+
+    assert qp == product_q(D, qlfacs)
+    dt = time.monotonic() - t0
+    relstr = " ".join(f"{_p}^{_e}" for _p, _e in qlfacs)
+    logging.info(f"Reduced (dt={dt:.2f}s) to {relstr}")
 
     result = {}
     for l, e in qlfacs:
@@ -336,7 +356,7 @@ def gpu_sieve(D, p, dlogs: dict[int, any] | None = None):
             result[x] += e * ex
 
     qf = product_q(D, list(result.items()))
-    assert q0 == qf
+    assert qp == qf
 
     result = {l: e for l, e in result.items() if e}
     relstr = " ".join(f"{x}^{e}" for x, e in sorted(result.items()))
@@ -348,6 +368,7 @@ def main():
     argp = argparse.ArgumentParser()
     argp.add_argument("--algo", choices=("bmc", "cpu", "gpu"), default="gpu")
     argp.add_argument("--datadir")
+    argp.add_argument("--only-small", action="store_true")
     argp.add_argument("D", type=int)
     argp.add_argument("p", type=int)
     args = argp.parse_args()
@@ -356,14 +377,17 @@ def main():
 
     dlogs = None
     if args.datadir:
-        dlogf = pathlib.Path(args.datadir) / "group.structure.extra"
+        if args.only_small:
+            dlogf = pathlib.Path(args.datadir) / "group.structure"
+        else:
+            dlogf = pathlib.Path(args.datadir) / "group.structure.extra"
         if dlogf.is_file():
             dlogs = {}
             with open(dlogf) as f:
                 for line in f:
                     l = line.split()[0]
                     if l.isdigit():
-                        dlogs[int(l)] = line
+                        dlogs[int(l)] = [int(x) for x in line.split()[1:]]
             logging.info(f"Read {len(dlogs)} coordinates from {dlogf}")
 
     if args.algo == "bmc":
@@ -371,7 +395,15 @@ def main():
     elif args.algo == "cpu":
         cpu_sieve(args.D, args.p)
     elif args.algo == "gpu":
-        gpu_sieve(args.D, args.p, dlogs=dlogs)
+        result = gpu_sieve(args.D, args.p, dlogs=dlogs)
+        if dlogs is not None:
+            coords = None
+            for p, e in result.items():
+                if coords is None:
+                    coords = e * np.array(dlogs[p], dtype=object)
+                else:
+                    coords += e * np.array(dlogs[p], dtype=object)
+            print("Coordinates", coords)
 
 
 if __name__ == "__main__":
