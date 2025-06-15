@@ -313,7 +313,7 @@ def get_params(N: int, bias: float = None):
 
 
 # At most 2 GPU jobs at a time
-GPU_LOCK = [Semaphore(2)]
+GPU_LOCK = [Semaphore(1)]
 
 
 class Siever:
@@ -544,7 +544,7 @@ def main_impl(args: argparse.Namespace):
         logging.getLogger().setLevel(logging.DEBUG)
 
     while len(GPU_LOCK) < args.ngpu:
-        GPU_LOCK.append(Semaphore(2))
+        GPU_LOCK.append(Semaphore(1))
 
     N = args.N
     D = -abs(N)
