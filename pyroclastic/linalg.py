@@ -181,7 +181,7 @@ class CSRMatrix:
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight:.1f})"
         )
 
-    def wiedemann_multi(self, ls: list[int], check=False, lock=None):
+    def wiedemann_multi(self, ls: list[int], check=False, lock=None, bench=False):
         "Perform Wiedemann algorithm for multiple small moduli"
         MODULI = len(ls)
         if any(l.bit_length() > 32 for l in ls):
@@ -201,6 +201,8 @@ class CSRMatrix:
             BATCHSIZE = 16
         ITERS = 2 * dim
         ITERS = (ITERS // BATCHSIZE + 2) * BATCHSIZE
+        if bench:
+            ITERS = 1024
         # Tensor holding M^k V
         xv = mgr.tensor_t(np.zeros(dim * MODULI, dtype=word_t).view(np.uint32))
         xiter = mgr.tensor_t(np.zeros(MODULI, dtype=np.uint32))
@@ -266,6 +268,8 @@ class CSRMatrix:
         dets = []
         ls_good = []
         for i, li in enumerate(ls):
+            if bench:
+                break
             sequence = [int(x) % li for x in vout[:, i]]
 
             poly = flint_extras.berlekamp_massey(sequence, li)
@@ -600,7 +604,7 @@ class BlockCOO:
         v = xv.data().view(word_t).reshape((2, 1, dim))
         return np.copy(v[1, 0, :])
 
-    def wiedemann_multi(self, ls: list[int], check=False, lock=None):
+    def wiedemann_multi(self, ls: list[int], check=False, lock=None, bench=False):
         """
         Perform Wiedemann algorithm for multiple small moduli
 
@@ -632,7 +636,8 @@ class BlockCOO:
         else:
             BATCHSIZE = 8
         ITERS = (2 * dim // BATCHSIZE + 2) * BATCHSIZE
-
+        if bench:
+            ITERS = 1024
         # Tensor holding M^k V and M^(k+1) V
         xv = mgr.tensor_t(np.zeros(dim * 2 * MODULI, dtype=word_t).view(np.uint32))
         # Random weights S (idx such that S[idx]=1 in each workgroup)
@@ -701,6 +706,8 @@ class BlockCOO:
 
         dets = []
         for i, li in enumerate(ls):
+            if bench:
+                break
             sequence = [int(x) % li for x in vout[:, i]]
             poly = flint_extras.berlekamp_massey(sequence, li)
             assert len(poly) == dim + 1
@@ -959,7 +966,8 @@ def bench(rels):
     # print("Rows -1")
     # print(minus[:10], "...")
 
-    CHECK = True
+    CHECK = False
+    BENCH = not CHECK
 
     moduli = [
         x for x in range(max_mod32 - 10000, max_mod32) if flint.fmpz(x).is_prime()
@@ -969,30 +977,32 @@ def bench(rels):
     ][:3] + moduli[3:]
 
     Mat = SpMV(dense, plus, minus, basis, weight)
+    logging.info("Running with 1 modulus (naive kernel)")
+    Mat.wiedemann(moduli[0], check=CHECK, bench=BENCH)
     logging.info("Running with 16 moduli (naive kernel)")
-    Mat.wiedemann_multi(moduli[:16], check=CHECK)
+    Mat.wiedemann_multi(moduli[:16], check=CHECK, bench=BENCH)
     logging.info("Running with 32 moduli (naive kernel)")
-    Mat.wiedemann_multi(moduli[:32], check=CHECK)
+    Mat.wiedemann_multi(moduli[:32], check=CHECK, bench=BENCH)
     logging.info("Running with 64 moduli (naive kernel)")
-    Mat.wiedemann_multi(moduli[:64], check=CHECK)
+    Mat.wiedemann_multi(moduli[:64], check=CHECK, bench=BENCH)
     logging.info("Running with 128 moduli (naive kernel)")
-    Mat.wiedemann_multi(moduli[:128], check=CHECK)
+    Mat.wiedemann_multi(moduli[:128], check=CHECK, bench=BENCH)
 
     logging.info("Running with 32 moduli64 (naive kernel)")
-    Mat.wiedemann_multi(moduli64[:32], check=CHECK)
+    Mat.wiedemann_multi(moduli64[:32], check=CHECK, bench=BENCH)
     logging.info("Running with 64 moduli64 (naive kernel)")
-    Mat.wiedemann_multi(moduli64[:64], check=CHECK)
+    Mat.wiedemann_multi(moduli64[:64], check=CHECK, bench=BENCH)
 
     if dim < 32768:
         # indices must fit int16
         Mat1 = CSRMatrix(dense, plus, minus, basis, weight)
         if dim < gpu.max_shmem() // 4:
             logging.info("Running with 16 moduli (small)")
-            Mat1.wiedemann_multi(moduli[:16], check=CHECK)
+            Mat1.wiedemann_multi(moduli[:16], check=CHECK, bench=BENCH)
             logging.info("Running with 64 moduli (small)")
-            Mat1.wiedemann_multi(moduli[:64], check=CHECK)
+            Mat1.wiedemann_multi(moduli[:64], check=CHECK, bench=BENCH)
             logging.info("Running with 128 moduli (small)")
-            Mat1.wiedemann_multi(moduli[:128], check=CHECK)
+            Mat1.wiedemann_multi(moduli[:128], check=CHECK, bench=BENCH)
 
         # FIXME: broken?
         # logging.info("Running with 16 moduli (medium)")
@@ -1002,26 +1012,28 @@ def bench(rels):
 
     if dim < gpu.max_shmem() // 8:
         logging.info("Running with 16 moduli64 (small)")
-        Mat1.wiedemann_multi(moduli64[:16], check=CHECK)
+        Mat1.wiedemann_multi(moduli64[:16], check=CHECK, bench=BENCH)
         logging.info("Running with 64 moduli64 (small)")
-        Mat1.wiedemann_multi(moduli64[:64], check=CHECK)
+        Mat1.wiedemann_multi(moduli64[:64], check=CHECK, bench=BENCH)
         logging.info("Running with 128 moduli64 (small)")
-        Mat1.wiedemann_multi(moduli64[:128], check=CHECK)
+        Mat1.wiedemann_multi(moduli64[:128], check=CHECK, bench=BENCH)
 
     Mat2 = BlockCOO(dense, plus, minus, basis, weight)
     logging.info("Running BlockCOO v3 with 1 moduli")
-    Mat2.wiedemann_multi(moduli[:1], check=CHECK)
+    Mat2.wiedemann_multi(moduli[:1], check=CHECK, bench=BENCH)
     logging.info("Running BlockCOO v3 with 8 moduli")
-    Mat2.wiedemann_multi(moduli[:8], check=CHECK)
+    Mat2.wiedemann_multi(moduli[:8], check=CHECK, bench=BENCH)
     logging.info("Running BlockCOO v3 with 16 moduli")
-    Mat2.wiedemann_multi(moduli[:16], check=CHECK)
+    Mat2.wiedemann_multi(moduli[:16], check=CHECK, bench=BENCH)
     logging.info("Running BlockCOO v3 with 32 moduli")
-    Mat2.wiedemann_multi(moduli[:32], check=CHECK)
+    Mat2.wiedemann_multi(moduli[:32], check=CHECK, bench=BENCH)
 
+    logging.info("Running BlockCOO v3 with 1 moduli64")
+    Mat2.wiedemann_multi(moduli64[:1], check=CHECK, bench=BENCH)
     logging.info("Running BlockCOO v3 with 8 moduli64")
-    Mat2.wiedemann_multi(moduli64[:8], check=CHECK)
+    Mat2.wiedemann_multi(moduli64[:8], check=CHECK, bench=BENCH)
     logging.info("Running BlockCOO v3 with 16 moduli64")
-    Mat2.wiedemann_multi(moduli64[:16], check=CHECK)
+    Mat2.wiedemann_multi(moduli64[:16], check=CHECK, bench=BENCH)
 
 
 if __name__ == "__main__":

@@ -113,7 +113,7 @@ class SpMV:
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
         )
 
-    def wiedemann(self, l: int, check=False):
+    def wiedemann(self, l: int, check=False, bench=False):
         "Perform Wiedemann algorithm for a single small modulus"
         WGSIZE = 128
         mgr = self.mgr
@@ -153,6 +153,8 @@ class SpMV:
         xsel = mgr.tensor_t(sel.view(np.uint32))
         # Output sequence out[k] = S M^k V
         ITERS = (2 * dim // BATCHSIZE + 2) * BATCHSIZE
+        if bench:
+            ITERS = 1024
         xout = mgr.tensor_t(np.zeros(ITERS, dtype=np.uint64).view(np.uint32))
         xmod = mgr.tensor_t(np.array([l], dtype=word_t).view(np.uint32))
 
@@ -214,7 +216,7 @@ class SpMV:
 
         poly = flint_extras.berlekamp_massey(sequence, l)
         assert len(poly) <= dim + 1, len(poly)
-        if check:
+        if check and not bench:
             assert linalg.check_wiedemann(sequence, poly, l)
             assert len(poly) == dim + 1, len(poly)
             det = -poly[0] * pow(poly[dim], -1, l) % l
@@ -227,7 +229,7 @@ class SpMV:
 
         return poly
 
-    def wiedemann_multi(self, ls: list[int], check=False, lock=None):
+    def wiedemann_multi(self, ls: list[int], check=False, lock=None, bench=False):
         "Perform Wiedemann algorithm for multiple small moduli"
         MODULI = len(ls)
         assert MODULI in (8, 16, 32, 64, 128)
@@ -249,6 +251,8 @@ class SpMV:
             BATCHSIZE = 16
         ITERS = 2 * dim
         ITERS = (ITERS // BATCHSIZE + 2) * BATCHSIZE
+        if bench:
+            ITERS = 1024
         # Tensor holding M^k V and M^(k+1) V
         xv = mgr.tensor_t(np.zeros(dim * 2 * MODULI, dtype=word_t).view(np.uint32))
         xiter = mgr.tensor_t(np.zeros(dim // BATCH_ROW + 1, dtype=np.uint32))
@@ -331,6 +335,8 @@ class SpMV:
 
         dets = []
         for i, li in enumerate(ls):
+            if bench:
+                break
             sequence = [int(x) % li for x in vout[:, i]]
 
             poly = flint_extras.berlekamp_massey(sequence, li)
@@ -689,7 +695,7 @@ class BlockCOO:
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
         )
 
-    def wiedemann_multi(self, ls: list[int], check=False):
+    def wiedemann_multi(self, ls: list[int], check=False, bench=False):
         "Perform Wiedemann algorithm for multiple small moduli"
         BM = self.BM
         MODULI = len(ls)
@@ -712,7 +718,8 @@ class BlockCOO:
         else:
             BATCHSIZE = 16
         ITERS = (2 * dim // BATCHSIZE + 2) * BATCHSIZE
-
+        if bench:
+            ITERS = 1024
         # Tensor holding M^k V and M^(k+1) V
         xv = mgr.tensor_t(np.zeros(dim * 2 * MODULI, dtype=word_t).view(np.uint32))
         # Random weights S (idx such that S[idx]=1 in each workgroup)
@@ -784,6 +791,8 @@ class BlockCOO:
 
         polys = []
         for i, li in enumerate(ls):
+            if bench:
+                break
             sequence = [int(x) % li for x in vout[:, i]]
             poly = flint_extras.berlekamp_massey(sequence, li)
             polys.append(poly)
