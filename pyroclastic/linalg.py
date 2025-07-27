@@ -752,7 +752,7 @@ def update_crt(bigres, bigmod, res, mod):
 
 WORKER_M = None
 
-GPU_LOCK = [Semaphore(2)]
+GPU_LOCK = [Semaphore(1)]
 
 
 def worker_init(*initargs):
@@ -807,7 +807,7 @@ def detz(subrels, threads, logfile=None):
     done = 0
     # Create new locks for each pool
     for i in range(len(GPU_LOCK)):
-        GPU_LOCK[i] = Semaphore(2)
+        GPU_LOCK[i] = Semaphore(1)
     with Pool(threads, initializer=worker_init, initargs=margs) as mat_pool:
         for dets, mods in mat_pool.imap_unordered(
             worker_task, itertools.batched(moduli, BATCH_SIZE)
