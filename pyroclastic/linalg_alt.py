@@ -159,7 +159,7 @@ class SpMV:
         xmod = mgr.tensor_t(np.array([l], dtype=word_t).view(np.uint32))
 
         xd, xplus, xminus, xidxp, xidxm = self.tensors
-        defines = self.defines
+        defines = self.defines | {}
         if INT64:
             defines |= {"INT64": 1}
         kernel = gpu.compile("spmv.comp", defines)
@@ -232,8 +232,8 @@ class SpMV:
     def wiedemann_multi(self, ls: list[int], check=False, lock=None, bench=False):
         "Perform Wiedemann algorithm for multiple small moduli"
         MODULI = len(ls)
-        assert MODULI in (8, 16, 32, 64, 128)
-        BATCH_ROW = 512 // MODULI
+        assert MODULI in (1, 2, 4, 8, 16, 32, 64, 128)
+        BATCH_ROW = min(128, 512 // MODULI)
 
         if any(l.bit_length() > 32 for l in ls):
             INT64 = True
