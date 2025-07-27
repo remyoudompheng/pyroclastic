@@ -12,6 +12,7 @@ def main():
     argp = argparse.ArgumentParser()
     argp.add_argument("-v", "--verbose", action="store_true")
     argp.add_argument("--check", action="store_true", help="Verify relations")
+    argp.add_argument("--siever2", action="store_true", help="Use Siever2")
     argp.add_argument(
         "-j",
         metavar="THREADS",
@@ -38,7 +39,7 @@ def main():
     logging.info(f"Running on device {gpu.device_name()}")
 
     if args.OUTDIR is None:
-        logging.info(f"Creating temporary directory for results")
+        logging.info("Creating temporary directory for results")
         with tempfile.TemporaryDirectory(prefix="pyroclastic") as tmpdir:
             args.OUTDIR = tmpdir
             args.DATADIR = args.OUTDIR

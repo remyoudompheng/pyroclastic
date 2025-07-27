@@ -1,0 +1,247 @@
+// Precompute sorted arrays of roots modulo each prime and prepare sieve hits.
+//
+// The output array will by partially sorted into 256 shards
+// corresponding to 8 most significant bits of the polynomial index.
+// Each shader invocation handles an output shard.
+//
+// This is a meet-in-the-middle computation similar to the algorithm
+// described in Kleinjung, "Quadratic Sieving"
+
+#version 450
+
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Enumeration of prime base and roots
+layout(binding = 0) readonly buffer Primes { uint primes[]; };
+// Array of length len(primes) * (16+16+16+16) for 2^16 polynomials.
+layout(binding = 1) readonly buffer PRoots { int proots[]; };
+layout(binding = 2) writeonly buffer Hits { uint bout[]; };
+#if DEBUG
+layout(binding = 3) writeonly buffer RSort { uvec2 rsorted[]; };
+layout(binding = 4) writeonly buffer RIdx { uint rindex[]; };
+#endif
+
+#include <arith.comp>
+#include <siqs_common.h>
+
+#if AFACS < 17
+#error AFACS < 17
+#endif
+
+#if (AFACS & 1) != 1
+#error AFACS & 1 != 1
+#endif
+
+const uint AHALF = AFACS / 2;
+
+shared uint sorted[1 << AHALF];
+// Actually stores vectors of 2 u16:
+// index[i].x is the index in sorted for radix sort
+// index[i].y is the polynomial index for sorted[i]
+shared uint index[1 << AHALF];
+
+const uint ROOT_STRIDE = 1 + 16 + 16 + 16 + 16 + (2 << (AHALF - 8));
+const uint ROOTS_OFF = 1 + 16 + 16 + (1 << (AHALF - 8));
+uint tidx = gl_LocalInvocationID.x;
+
+// Local copy of root data.
+shared uint sroots[ROOT_STRIDE];
+
+void sort(uint pidx) {
+  barrier();
+  memoryBarrierShared();
+
+  const uint p = primes[pidx];
+  const uint plen = findMSB(p) + 1;
+  // Count statistics index[j] = count(i where value[i] >> (l-8) == j)
+  for (uint j0 = 0; j0 < (1 << AHALF); j0 += gl_WorkGroupSize.x) {
+    const uint j = j0 + tidx;
+    index[j] = 0;
+  }
+  if (tidx < ROOT_STRIDE)
+    sroots[tidx] = proots[pidx * ROOT_STRIDE + tidx];
+  barrier();
+  memoryBarrierShared();
+  // Assume WorkGroupSize.x % 16 == 0
+  // r1 is constant during the loop.
+  const uint r1 = sroots[ROOTS_OFF + tidx % 16];
+  for (uint j0 = 0; j0 < (1 << AHALF); j0 += gl_WorkGroupSize.x) {
+    const uint j = j0 + tidx;
+    const uint r2 = sroots[ROOTS_OFF + 16 + bitfieldExtract(j, 4, 4)];
+    const uint r3 = sroots[ROOTS_OFF + 32 + (j >> 8)];
+    uint r = r1 + r2 + r3;
+    if (r >= p)
+      r -= p;
+    if (r >= p)
+      r -= p;
+    const uint bucket = r >> (plen - AHALF);
+    atomicAdd(index[bucket], 1);
+  }
+  barrier();
+  memoryBarrierShared();
+  // Compute cumulative sums to store value array
+  // Only subgroup 0 is active here.
+  if (gl_SubgroupID == 0) {
+    const uint sidx = gl_SubgroupInvocationID;
+    uint acc = 0;
+    for (uint i = 0; i < (1 << AHALF); i += gl_SubgroupSize) {
+      const uint h = index[i + sidx];
+      index[i + sidx] = acc + subgroupExclusiveAdd(h);
+      acc += subgroupAdd(h);
+    }
+  }
+  barrier();
+  memoryBarrierShared();
+
+#if DEBUG
+  for (uint j0 = 0; j0 < (1 << AHALF); j0 += gl_WorkGroupSize.x) {
+    const uint j = j0 + tidx;
+    rindex[(pidx << AHALF) + j] = index[j];
+  }
+#endif
+
+  // Now write partially sorted values
+  for (uint j0 = 0; j0 < (1 << AHALF); j0 += gl_WorkGroupSize.x) {
+    const uint j = j0 + tidx;
+    const uint r2 = sroots[ROOTS_OFF + 16 + bitfieldExtract(j, 4, 4)];
+    const uint r3 = sroots[ROOTS_OFF + 32 + (j >> 8)];
+    uint r = r1 + r2 + r3;
+    if (r >= p)
+      r -= p;
+    if (r >= p)
+      r -= p;
+    const uint bucket = r >> (plen - AHALF);
+    barrier(); // FIXME: why???
+    const uint ptr = atomicAdd(index[bucket], 1) & 0xffff;
+    sorted[ptr] = r;
+    atomicOr(index[ptr], j << 16);
+  }
+
+#if DEBUG
+  barrier();
+  memoryBarrierShared();
+
+  for (uint j0 = 0; j0 < (1 << AHALF); j0 += gl_WorkGroupSize.x) {
+    const uint j = j0 + tidx;
+    rsorted[(pidx << AHALF) + j] = uvec2(index[j] >> 16, sorted[j]);
+  }
+#endif
+}
+
+const uint BUFMAX = 16;
+
+uint buftmp[BUFMAX];
+uint buflen;
+
+// We shouldn't have too many shards otherwise memory bandwidth collapses.
+uint SHARDSIZE = bout.length() / SHARDS;
+uint idxlo = gl_LocalInvocationID.x;
+uint shardstart = SHARDSIZE * (tidx % SHARDS);
+
+void flush() {
+  if (buflen == BUFMAX) {
+    const uint outpos = atomicAdd(bout[shardstart], BUFMAX);
+    for (uint i = 0; i < BUFMAX; i++) {
+      bout[shardstart + 1 + outpos + i] = buftmp[i];
+    }
+    buflen = 0;
+  }
+}
+
+void prefill(uint pidx) {
+  // Assume that SHARDS >= 256
+  const uint idx1 = bitfieldExtract(idxlo, 0, 4); // constant during the loop
+  const uint idx2 = bitfieldExtract(idxlo, 4, 4);
+  uint p = 0;
+  int b1 = 0;
+  int rp = 0;
+  uint plog = 0;
+  float pinv = 1.0;
+  uint logb = 99; // size of buckets = 2^logb
+  if (pidx < primes.length()) {
+    p = primes[pidx];
+    rp = int(sroots[0]);
+    b1 = int(sroots[1 + idx1]);
+    plog = clamp(findMSB(p), HUGE_LOG_OFFSET, HUGE_LOG_OFFSET + 7) -
+           HUGE_LOG_OFFSET;
+    pinv = 1.0 / float(p);
+    b1 -= int(sroots[17 + idx2]);
+    if (b1 < 0)
+      b1 += int(p);
+    logb = findMSB(p) + 1 - AHALF;
+
+    barrier();
+    memoryBarrierShared();
+  }
+
+  // Number of iterations is ~256 INTERVAL / p
+  // const uint maxiters = clamp(2 * INTERVAL >> logb, 2, 256);
+
+  // Sieve hits are such that 0 <= ±R + B1 - B2 <= INTERVAL
+  // i.e. B2 is in interval [±R+B1-INTERVAL,±R+B1]
+  //
+  // We assume that 2M << p
+  // Compute t1 = (±R - 2M + B1) % p, t2 = t1 + 2M and corresponding buckets
+  //
+  // After sort, index points to the **end** of each bucket.
+  for (uint idx3 = 0; idx3 < 1 << (AHALF - 8); idx3++) {
+    uint bb1 = b1;
+    if (pidx < primes.length()) {
+      bb1 -= sroots[33 + idx3];
+      if (bb1 < 0)
+        bb1 += int(p);
+    }
+    [[unroll]]
+    for (uint sgn = 0; sgn <= 1; sgn++) {
+      const uint r = (sgn == 0) ? rp : p - rp;
+      const int t1 =
+          int(modp_float(int(r + bb1) - int(INTERVAL) - (1 << logb), p, pinv));
+      const uint bkt1 = uint(t1) >> logb;
+      const uint ptr1 = index[bkt1] & 0xffff;
+      int t2 = int(modp_float(int(r + bb1), p, pinv));
+      const uint bkt2 = uint(t2) >> logb;
+      uint ptr2 = index[bkt2] & 0xffff;
+      if (ptr2 < ptr1)
+        ptr2 += 1 << AHALF;
+
+      if (sgn == 1 && rp == 0) {
+        continue;
+      }
+
+      for (uint ptr = ptr1; ptr < ptr2; ptr++) {
+        const uint b2 = sorted[ptr % (1 << AHALF)];
+        const uint idxhi = index[ptr % (1 << AHALF)] >> 16;
+        // The root is at position: M + R - B1 - B2 = t2 - root
+        uint root = (b2 <= t2) ? t2 - b2 : p + t2 - b2;
+        if (root >= p)
+          root -= p;
+        if (root < INTERVAL) {
+          const uint idxh = (idxhi << (AHALF - 8)) + idx3;
+          buftmp[buflen] = plog | ((root + idxh * INTERVAL) << 3);
+          buflen++;
+          flush();
+        }
+      }
+    }
+  }
+}
+
+void main() {
+  buflen = 0;
+
+  for (uint pidx = XXL_PRIME + gl_WorkGroupID.x; pidx < primes.length();
+       pidx += gl_NumWorkGroups.x) {
+    sort(pidx);
+    prefill(pidx);
+  }
+  // Final flush
+  const uint outpos = atomicAdd(bout[shardstart], buflen);
+  for (uint i = 0; i < buflen; i++) {
+    bout[shardstart + 1 + outpos + i] = buftmp[i];
+  }
+}

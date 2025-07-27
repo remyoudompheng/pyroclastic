@@ -1,0 +1,16 @@
+// Initialization kernel setting a few buffer locations to zero.
+
+#version 450
+
+#include <siqs_common.h>
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) writeonly buffer Out { uint bout[]; };
+
+void main() {
+  for (uint i = gl_LocalInvocationID.x; i < SHARDS; i += gl_WorkGroupSize.x) {
+    bout[i] = 0;
+    bout[bout.length() / SHARDS * i] = 0;
+  }
+}

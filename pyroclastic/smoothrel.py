@@ -238,7 +238,8 @@ def gpu_sieve(D, p, dlogs: dict[int, any] | None = None):
         D, sieve.smoothness_bias(D)
     )
     B2 = B2k * B1
-    M = ITERS * sieve.SEGMENT_SIZE // 2
+    SEGMENT_SIZE = 16384
+    M = ITERS * SEGMENT_SIZE // 2
     THRESHOLD = (
         D.bit_length() // 2 + M.bit_length() - 2 * B1.bit_length() - EXTRA_THRESHOLD
     )
@@ -332,6 +333,9 @@ def gpu_sieve(D, p, dlogs: dict[int, any] | None = None):
             "ITERS": ITERS,
             "THRESHOLD": THRESHOLD,
             "OUTSTRIDE": OUTSTRIDE,
+            # hardcoded
+            "SEGMENT_SIZE": SEGMENT_SIZE,
+            "SUBSEGMENT_SIZE": 8192,
         }
         siever = sieve.Siever(WARGS)
         lfactors = None

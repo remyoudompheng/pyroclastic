@@ -1,0 +1,158 @@
+// SIQS core loop
+//
+// Each workgroup handles a bucket covering POLYS_PER_B polynomials.
+// The sieving region size is always 8192.
+// The sieve interval per polynomial has size between 128 and 1024
+//
+// Each segment element is a 8-bit accumulator
+
+#version 450
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+const uint BUCKETS = (1 << (AFACS - 1)) * SEGMENT_SIZE / BUCKET_INTERVAL;
+const uint POLYS_PER_B = BUCKET_INTERVAL / SEGMENT_SIZE;
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Enumeration of prime base and roots
+layout(binding = 0) readonly buffer Primes { uint primes[]; };
+// Array of length AFACS * len(primes)
+layout(binding = 1) readonly buffer PRoots { int proots[]; };
+// An array of size gl_NumWorkGroups * ITERS * BUCKET_SIZE
+// containing offsets for huge primes sorted by segment.
+// A bucket will contain SEGMENT_SIZE * sum(1/p) elements.
+//
+// Each 16-bit offset is 13-bit offset inside a size 8192 interval + 3-bit logp.
+layout(binding = 2) readonly buffer HugeOffsets { uint16_t hugeoffs[]; };
+// Each sieve report is a packed (poly_idx, interval offset).
+layout(binding = 3) coherent buffer Output { uint outs[]; };
+#if DEBUG
+layout(binding = 4) writeonly buffer Debug { uint debugbuf[]; };
+#endif
+
+#include <arith.comp>
+#include <siqs_common.h>
+
+#if AFACS < 17
+#error AFACS < 17
+#endif
+
+#if (AFACS & 1) != 1
+#error AFACS & 1 != 1
+#endif
+
+const int AHALF = AFACS / 2;
+const uint ROOT_STRIDE = 1 + 16 + 16 + 16 + 16 + (2 << (AHALF - 8));
+
+// Bit vector, where bit i is set if i is composite.
+shared uint segment[BUCKET_INTERVAL / 4];
+
+// Smallest 4 primes are not sieved.
+const uint MIN_PRIME = 4;
+
+void sieve_small(uint poly_idx, uint sub_idx, uint pidx) {
+  const uint subseg_off = sub_idx * SEGMENT_SIZE / 4;
+  // Get polynomial roots
+  const uint ROOTS_OFF = 1 + 16 + 16 + (1 << (AHALF - 8));
+  const uint p = primes[pidx];
+  const float pinv = 1.0 / float(p);
+  int rp = int(proots[pidx * ROOT_STRIDE]);
+  if (rp < 0)
+    return;
+  uint l1 = bitfieldExtract(poly_idx, 0, 4);
+  uint l2 = bitfieldExtract(poly_idx, 4, 4);
+  uint l3 = bitfieldExtract(poly_idx, 8, AHALF - 8);
+  // Compute M + (sqrt(N) - B) / 2A
+  // by combining precomputed partial sums.
+  int bp = proots[pidx * ROOT_STRIDE + (1 + l1)];
+  bp -= proots[pidx * ROOT_STRIDE + (17 + l2)];
+  bp -= proots[pidx * ROOT_STRIDE + (33 + l3)];
+  uint h0 = bitfieldExtract(poly_idx, AHALF, 4);
+  uint h1 = bitfieldExtract(poly_idx, AHALF + 4, 4);
+  uint h2 = bitfieldExtract(poly_idx, AHALF + 8, AHALF - 8);
+  bp -= proots[pidx * ROOT_STRIDE + (ROOTS_OFF + h0)];
+  bp -= proots[pidx * ROOT_STRIDE + (ROOTS_OFF + 16 + h1)];
+  bp -= proots[pidx * ROOT_STRIDE + (ROOTS_OFF + 32 + h2)];
+
+  bp = int(modp_float(bp, p, pinv));
+  uvec2 roots = uvec2(rp + bp, p - rp + bp);
+  if (roots.x >= p)
+    roots.x -= p;
+  if (roots.y >= p)
+    roots.y -= p;
+
+  uint logp = findMSB(p);
+  uint off = roots.x;
+  while (off < SEGMENT_SIZE) {
+    atomicAdd(segment[subseg_off + off / 4], logp << (8 * (off % 4)));
+    off += p;
+  }
+  if (rp == 0)
+    return;
+  off = roots.y;
+  while (off < SEGMENT_SIZE) {
+    atomicAdd(segment[subseg_off + off / 4], logp << (8 * (off % 4)));
+    off += p;
+  }
+}
+
+void main() {
+  const uint tidx = gl_LocalInvocationID.x;
+
+  for (uint i = 0; i < segment.length(); i += gl_WorkGroupSize.x) {
+    segment[i + tidx] = 0;
+  }
+
+  barrier();
+  memoryBarrierShared();
+
+  const uint bidx = gl_WorkGroupID.x;
+  const uint sub_idx = tidx % POLYS_PER_B;
+  const uint poly_idx = bidx + BUCKETS * sub_idx;
+  const uint pidx1 = tidx / POLYS_PER_B;
+  for (uint pidx = MIN_PRIME + pidx1; pidx < XXL_PRIME;
+       pidx += gl_WorkGroupSize.x / POLYS_PER_B) {
+    // Each invocation sieves 1 small prime for 1 polynomial
+    sieve_small(poly_idx, sub_idx, pidx);
+  }
+
+  // Use precomputed sieve hits
+  uint huge_start = bidx * BUCKET_SIZE;
+  uint huge_count = hugeoffs[huge_start];
+  for (uint i = 0; i <= huge_count; i += gl_WorkGroupSize.x) {
+    if (0 < i + tidx && i + tidx <= huge_count) {
+      uint off = hugeoffs[huge_start + i + tidx];
+      uint logp = (off % 8) + HUGE_LOG_OFFSET;
+      off = off / 8;
+      atomicAdd(segment[off / 4], logp << (8 * (off % 4)));
+    }
+  }
+
+  barrier();
+  memoryBarrierShared();
+
+  // Count primes and zero buffer
+  const uint BLOCKSIZE = M / 2;
+  for (uint i = 0; i < segment.length(); i += gl_WorkGroupSize.x) {
+    uint si = segment[i + tidx];
+    u8vec4 logs = unpack8(si);
+#if DEBUG
+    const uint poly_idx = bidx + BUCKETS * (i / BLOCKSIZE);
+    const uint poly_off = (i + tidx) % BLOCKSIZE;
+    debugbuf[poly_idx * BLOCKSIZE + poly_off] = si;
+#endif
+    for (uint ii = 0; ii < 4; ii++) {
+      if (logs[ii] > THRESHOLD) {
+        const uint x = 4 * (i + tidx) + ii;
+        const uint ridx = atomicAdd(outs[0], 1);
+        const uint poly_idx = bidx + BUCKETS * (x / SEGMENT_SIZE);
+        if (ridx + 1 < outs.length())
+          outs[1 + ridx] = poly_idx * SEGMENT_SIZE + (x % SEGMENT_SIZE);
+      }
+    }
+  }
+}

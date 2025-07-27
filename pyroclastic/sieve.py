@@ -47,8 +47,10 @@ from . import algebra
 from . import gpu
 from . import relations
 
-SEGMENT_SIZE = 16384
-SUBSEGMENT_SIZE = 8192
+BUCKET_INTERVAL = 8192
+SHARDS = 256
+
+DEBUG_TIMINGS = False
 
 
 def smoothness_bias(D: int):
@@ -207,7 +209,7 @@ def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, OUTSTRIDE):
     reports = 0
     results = []
     A, ak, Bi = ABi
-    for _i in range(1 << (len(Bi)-1)):
+    for _i in range(1 << (len(Bi) - 1)):
         poly = None
         for _j in range(OUTSTRIDE):
             oidx = OUTSTRIDE * _i + _j
@@ -296,6 +298,20 @@ PARAMS2 = (
     (500, 8000_000, 100, 1, 50, 12, 64, 2),
 )
 
+# Parameters for optimized sieve with tiny intervals
+PARAMS_SIEVE2 = (
+    # bitsize, B1, B2/B1, EXTRA_THRESHOLD, AFACS, INTERVAL_SIZE
+    (340, 1000_000, 25, 25, 17, 4096),
+    (360, 1200_000, 25, 25, 19, 1024),
+    (380, 1500_000, 30, 30, 19, 1024),
+    (400, 1800_000, 35, 30, 19, 1024),
+    (420, 2000_000, 50, 30, 19, 1024),
+    (440, 2500_000, 55, 35, 21, 512),
+    (460, 3500_000, 60, 40, 21, 512),
+    (480, 5000_000, 80, 45, 21, 512),
+    (500, 6000_000, 100, 50, 21, 512),
+)
+
 
 def get_params(N: int, bias: float = None):
     sz = N.bit_length()
@@ -312,11 +328,31 @@ def get_params(N: int, bias: float = None):
     return res[1:]
 
 
+def get_params2(N: int, bias: float = None):
+    sz = N.bit_length()
+    if bias:
+        sz -= 2.5 * bias
+    res = None
+    for p in PARAMS_SIEVE2:
+        if p[0] <= sz:
+            res = p
+    return res[1:]
+
+
 # At most 2 GPU jobs at a time
 GPU_LOCK = [Semaphore(1)]
 
 
 class Siever:
+    """
+    Sieve kernel for traditional SIQS
+
+    * a small kernel computes Bi mod l for each sieve prime l
+    * each workgroup handles 1 or several polynomial
+    * each polynomial is sieved over a large interval (multiple 16k segments)
+      and all roots modulo l are reconstructed on-the-fly during sieve
+    """
+
     def __init__(self, wargs):
         self.wargs = wargs
         primes = wargs["primes"]
@@ -324,6 +360,8 @@ class Siever:
         AFACS = wargs["AFACS"]
         BLEN = wargs["BLEN"]
         POLYS_PER_WG = wargs["POLYS_PER_WG"]
+        SEGMENT_SIZE = wargs["SEGMENT_SIZE"]
+        SUBSEGMENT_SIZE = wargs["SUBSEGMENT_SIZE"]
         HUGE_PRIME = wargs.get("HUGE_PRIME")
         BUCKET_SIZE = wargs.get("BUCKET_SIZE")
         AVG_BUCKET_SIZE = wargs.get("AVG_BUCKET_SIZE")
@@ -501,12 +539,299 @@ class Siever:
         return dt
 
 
+class Siever2:
+    """
+    Sieve kernels for very small interval sizes:
+
+    * each workgroup of the sieve kernel handle a region of size 8k
+      covering multiple polynomials
+    * first root pass uses the meet-in-the-middle strategy and
+      outputs 32-bit values stored in 256 shards (3-bit log, 29-bit index and polynomial)
+      (total sieve region per batch is at most 2^37)
+    * sieve hits are stored as 16-bit integers (region index and 3-bit prime size)
+    * the 3-bit prime size is clamp((plog - 8) / 2) representing values 8, 10, ..22
+    """
+
+    def __init__(self, wargs):
+        self.wargs = wargs
+        primes = wargs["primes"]
+        roots = wargs["roots"]
+        AFACS = wargs["AFACS"]
+        BLEN = wargs["BLEN"]
+        HUGE_PRIME = wargs.get("HUGE_PRIME")
+        BUCKET_SIZE = wargs.get("BUCKET_SIZE")
+        AVG_BUCKET_SIZE = wargs.get("AVG_BUCKET_SIZE")
+        INTERVAL_SIZE = wargs.get("INTERVAL_SIZE")
+        ITERS = wargs.get("ITERS", 1)
+        assert ITERS == 1
+        THRESHOLD = wargs["THRESHOLD"]
+        OUTSTRIDE = wargs["OUTSTRIDE"]
+        DEBUG = wargs.get("DEBUG")
+
+        AHALF = AFACS // 2
+        assert AFACS == 2 * AHALF + 1
+
+        # A bucket contains offsets for a subsegment
+        if HUGE_PRIME is None:
+            BUCKET_SIZE = 1
+            AVG_BUCKET_SIZE = 0
+            HUGE_PRIME = len(primes)
+            if primes[-1] > 2 * INTERVAL_SIZE:
+                HUGE_PRIME = next(
+                    idx
+                    for idx, p in enumerate(primes)
+                    if p > 1.5 * INTERVAL_SIZE and p.bit_length() >= AHALF
+                )
+                # Small primes (except 4 tiny, are a multiple of 32)
+                if HUGE_PRIME % 32 != 4:
+                    HUGE_PRIME += (4 - HUGE_PRIME) % 32
+                    assert HUGE_PRIME % 32 == 4
+                phuge = primes[HUGE_PRIME]
+                BUCKET_SIZE = int(
+                    BUCKET_INTERVAL
+                    * (math.log(math.log(primes[-1]) / math.log(phuge)))
+                    * 1.1
+                )
+                BUCKET_SIZE += 64 - BUCKET_SIZE % 64
+                AVG_BUCKET_SIZE = BUCKET_INTERVAL * (
+                    math.log(math.log(primes[-1]) / math.log(phuge))
+                )
+                logging.debug(
+                    f"Huge prime index {HUGE_PRIME} ({phuge}) bucket size %d expect usage %d",
+                    BUCKET_SIZE,
+                    int(AVG_BUCKET_SIZE),
+                )
+
+        WORKCHUNK = 2 ** (AFACS - 1)
+
+        XXL_PRIME = HUGE_PRIME
+        xxl_length = 1
+        if HUGE_PRIME is not None:
+            XXL_PRIME, pxxl = HUGE_PRIME, primes[HUGE_PRIME]
+            xxl_ratio = math.log(math.log(primes[-1]) / math.log(pxxl))
+            xxl_length = int(xxl_ratio * INTERVAL_SIZE * WORKCHUNK * 1.1)
+            xxl_length = (xxl_length // 2048) * 2048
+            xxl_size = 4 * xxl_length
+            logging.debug(
+                f"XXL primes {len(primes) - XXL_PRIME} buffer size {xxl_size >> 20}MiB (hit rate {100 * xxl_ratio:.1f}%)"
+            )
+
+        self.roots_d = {p: r for p, r in zip(primes, roots)}
+
+        self.stampPeriod = gpu.stamp_period()
+
+        proc = current_process()
+        proc_id = proc._identity or (0,)
+        self.gpu_idx = proc_id[-1] % len(GPU_LOCK)
+        mgr = kp.Manager(self.gpu_idx)
+        gpu_name = mgr.get_device_properties().get("device_name", "unknown")
+        logging.info(f"Worker {proc.name} running on GPU {self.gpu_idx} ({gpu_name})")
+        xp = mgr.tensor_t(np.array(primes, dtype=np.uint32))
+        xn = mgr.tensor_t(np.array(roots, dtype=np.uint32))
+        assert AFACS >= 17 and AFACS & 1 == 1
+        nsumroots = 1 + 16 + 16 + 16 + 16 + 2 * 2 ** (AFACS // 2 - 8)
+        xr = mgr.tensor_t(np.zeros(len(roots) * nsumroots, dtype=np.uint32))
+        xb = mgr.tensor_t(np.zeros(AFACS * BLEN, dtype=np.uint32))
+        xargs = mgr.tensor_t(np.zeros(BLEN, dtype=np.uint32))
+        # Huge offsets are u16
+        BUCKETS = WORKCHUNK * INTERVAL_SIZE // BUCKET_INTERVAL
+        xhuge = mgr.tensor_t(
+            np.zeros(
+                BUCKETS * BUCKET_SIZE // 2,
+                dtype=np.uint32,
+            )
+        )
+        xout = mgr.tensor_t(np.zeros(OUTSTRIDE, dtype=np.uint32))
+
+        self.tensors = (xargs, xb, xout)
+
+        # Output buffer to receive full sieve results.
+        xdebug = None
+        if DEBUG:
+            logging.debug("sieve debug output enabled")
+            xdebug = mgr.tensor_t(
+                np.zeros(WORKCHUNK * INTERVAL_SIZE // 4, dtype=np.uint32)
+            )
+
+        # Send initial buffers (immutable)
+        mgr.sequence().record(kp.OpTensorSyncDevice([xp, xn, xargs])).eval()
+
+        defines = {
+            "BLEN": BLEN,
+            "AFACS": AFACS,
+            "SEGMENT_SIZE": INTERVAL_SIZE,
+            "SUBSEGMENT_SIZE": INTERVAL_SIZE,
+            "HUGE_PRIME": HUGE_PRIME,
+            "XXL_PRIME": XXL_PRIME,
+            "BUCKET_SIZE": BUCKET_SIZE,
+            "ITERS": ITERS,
+            "THRESHOLD": THRESHOLD,
+            "OUTSTRIDE": OUTSTRIDE,
+            "BUCKET_INTERVAL": 8192,
+        }
+        if DEBUG:
+            defines |= {"DEBUG": 1}
+        self.defines = defines
+
+        SHADER1 = gpu.compile("siqs2a_reset.comp", defines)
+        SHADER2 = gpu.compile("siqs2b_roots.comp", defines)
+        SHADER3 = gpu.compile("siqs2c_sort.comp", defines)
+        # SHADER4 = gpu.compile("siqs2d_prefill.comp", defines)
+        SHADER5 = gpu.compile("siqs2e_buckets.comp", defines)
+        SHADER6 = gpu.compile("siqs2f_sieve.comp", defines)
+
+        xfill = mgr.tensor_t(np.zeros(xxl_length, dtype=np.uint32))
+        if DEBUG:
+            print("debug output for sort shader")
+            xsort = mgr.tensor_t(np.zeros(2 * len(primes) << AHALF, dtype=np.uint32))
+            xsidx = mgr.tensor_t(np.zeros(len(primes) << AHALF, dtype=np.uint32))
+
+        mem_main = 4 * (xp.size() + xr.size() + xn.size() + xout.size())
+        mem_huge = 4 * (xfill.size() + xhuge.size())
+        mem = mem_main + mem_huge
+
+        logging.debug(
+            f"Memory usage {mem >> 10} kB (main {mem_main >> 10} kB, huge {mem_huge >> 10} kB)"
+        )
+
+        self.mgr = mgr
+        self.shader1 = mgr.algorithm(
+            [xfill],
+            SHADER1,
+            workgroup=(1, 1, 1),
+        )
+        self.shader2 = mgr.algorithm(
+            [xp, xn, xr, xb, xargs],
+            SHADER2,
+            workgroup=(len(primes) // 512 + 1, 1, 1),
+        )
+        self.shader3 = mgr.algorithm(
+            [xp, xr, xfill] + ([xsort, xsidx] if DEBUG else []),
+            SHADER3,
+            workgroup=(SHARDS, 1, 1),
+        )
+        # self.shader4 = mgr.algorithm(
+        #    [xp, xr, xfill, xsort, xsidx],
+        #    SHADER4,
+        #    workgroup=(SHARDS, 1, 1),
+        # )
+        self.shader5 = mgr.algorithm(
+            [xfill, xhuge],
+            SHADER5,
+            workgroup=(SHARDS, 1, 1),
+        )
+        self.shader6 = mgr.algorithm(
+            [xp, xr, xhuge, xout] + ([xdebug] if xdebug else []),
+            SHADER6,
+            workgroup=(BUCKETS, 1, 1),
+        )
+
+    def process(self, ak):
+        BLEN = self.wargs["BLEN"]
+        OUTSTRIDE = self.wargs["OUTSTRIDE"]
+        D, B1, B2 = self.wargs["D"], self.wargs["B1"], self.wargs["B2"]
+        A, Bi = make_poly(D, ak, self.roots_d)
+        if A.bit_length() + 2 > BLEN * 32:
+            logging.error(f"Skipping A={A} (too large)")
+            return 1.0, 0, []
+
+        dt = self._run(ak, A, Bi)
+        _, _, xout = self.tensors
+        vout = xout.data()
+        nreports, rows = self._process_sieve_reports(
+            (A, ak, Bi), vout.astype(np.uint32), D, B1, B2, OUTSTRIDE
+        )
+        return dt, nreports, rows
+
+    def _process_sieve_reports(self, ABi, vout, N, B1, B2, OUTSTRIDE):
+        INTERVAL = self.wargs["INTERVAL_SIZE"]
+        results = []
+        A, ak, Bi = ABi
+        nout = int(vout[0])
+        if nout >= len(vout):
+            logging.error(f"output buffer too small {nout}/{len(vout)}")
+        for oidx in range(min(len(vout) - 1, nout)):
+            v = int(vout[oidx + 1])
+            poly_idx = v // INTERVAL
+            x = v % INTERVAL - INTERVAL // 2
+            _A, _B, _C = expand_one_poly(N, A, Bi, poly_idx)
+            v = _A * x * x + _B * x + _C
+            u = 2 * _A * x + _B
+            assert u * u == 4 * A * v + N
+            # In the class group: (A, B, C) * (v, u, A) == 1
+            row = build_relation(v, x, [], B1=B1, B2=B2)
+            # print(poly_idx, x, v, row)
+            if row is None or any(_r > B2 for _r in row):
+                # factors too large
+                continue
+            assert product(row) == v
+            # Add correct signs to ideals
+            for i, p in enumerate(row):
+                up = u % p
+                if p == 2:
+                    # -[2] if the root is 3 mod 4
+                    if u & 3 == 3:
+                        row[i] = -p
+                else:
+                    # -[p] if the root is even
+                    if up & 1 == 0:
+                        # Even root
+                        row[i] = -p
+            # Add factors of A
+            for ai in ak:
+                bp = _B % ai
+                if bp & 1 == 0:
+                    row.append(-ai)
+                else:
+                    row.append(ai)
+            results.append(row)
+        return nout, results
+
+    def _run(self, ak, A, Bi):
+        AFACS = self.wargs["AFACS"]
+        BLEN = self.wargs["BLEN"]
+
+        xargs, xb, xout = self.tensors
+        xargs.data()[:] = to_uvec(A, BLEN)
+        for i in range(AFACS):
+            xb.data()[BLEN * i : BLEN * (i + 1)] = to_uvec(Bi[i], BLEN)
+        xout.data().fill(0)
+
+        with GPU_LOCK[self.gpu_idx]:
+            seq = (
+                self.mgr.sequence(total_timestamps=16)
+                .record(kp.OpTensorSyncDevice([xb, xout, xargs]))
+                .record(kp.OpAlgoDispatch(self.shader1))
+                .record(kp.OpAlgoDispatch(self.shader2))
+                .record(kp.OpAlgoDispatch(self.shader3))
+                # .record(kp.OpAlgoDispatch(self.shader4))
+                .record(kp.OpAlgoDispatch(self.shader5))
+                .record(kp.OpAlgoDispatch(self.shader6))
+                .record(kp.OpTensorSyncLocal([xout]))
+                .eval()
+            )
+
+        # Get GPU results (round to 0.5 tick if ticks are zero)
+        stamps = seq.get_timestamps()
+        if DEBUG_TIMINGS:
+            times = []
+            for t1, t2 in zip(stamps, stamps[1:]):
+                times.append((t2 - t1) * self.stampPeriod * 1e-9)
+            timestr = " ".join(f"{1000 * dt:.2f}ms" for dt in times)
+            logging.debug(f"times {timestr}")
+        dt = max(0.5, stamps[-1] - stamps[0]) * self.stampPeriod * 1e-9
+        return dt
+
+
 SIEVER = None
 
 
 def worker_init(initargs):
     global SIEVER
-    SIEVER = Siever(initargs)
+    if initargs.get("USE_SIEVER2"):
+        SIEVER = Siever2(initargs)
+    else:
+        SIEVER = Siever(initargs)
 
 
 def worker_task(ak):
@@ -517,6 +842,7 @@ def main():
     argp = argparse.ArgumentParser()
     argp.add_argument("-v", "--verbose", action="store_true")
     argp.add_argument("--check", action="store_true", help="Verify relations")
+    argp.add_argument("--siever2", action="store_true", help="Use Siever2")
     argp.add_argument(
         "-j",
         metavar="THREADS",
@@ -550,11 +876,24 @@ def main_impl(args: argparse.Namespace):
     D = -abs(N)
     bias = smoothness_bias(D)
     logging.info(f"Sieve smoothness bias is {bias:.2f} bits")
-    B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG = get_params(
-        N, bias
-    )
-    B2 = B2k * B1
-    M = ITERS * SEGMENT_SIZE // 2
+    USE_SIEVER2 = args.siever2
+    if not USE_SIEVER2:
+        B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG = get_params(
+            N, bias
+        )
+        SEGMENT_SIZE = 16384  # constant
+        SUBSEGMENT_SIZE = 8192  # constant
+        INTERVAL_SIZE = ITERS * SEGMENT_SIZE
+    else:
+        B1, B2k, EXTRA_THRESHOLD, AFACS, INTERVAL_SIZE = get_params2(N, bias)
+        ITERS = 1
+        OUTSTRIDE = 256
+        SEGMENT_SIZE = None
+        SUBSEGMENT_SIZE = None
+        POLYS_PER_WG = None
+
+    B2 = B1 * B2k
+    M = INTERVAL_SIZE // 2
 
     THRESHOLD = (
         N.bit_length() // 2 + M.bit_length() - 2 * B1.bit_length() - EXTRA_THRESHOLD
@@ -579,8 +918,6 @@ def main_impl(args: argparse.Namespace):
     WORKCHUNK = 2 ** (AFACS - 1)
     logging.debug(f"{AFACS} factors per A, {BLEN} words per coefficient")
 
-    BLOCK_SIZE = SEGMENT_SIZE * ITERS
-
     results = []
     all_primes = set()
 
@@ -595,6 +932,7 @@ def main_impl(args: argparse.Namespace):
     w = open(os.path.join(args.OUTDIR, "relations.sieve"), "w", buffering=1)
 
     WARGS = {
+        "USE_SIEVER2": USE_SIEVER2,
         "primes": primes,
         "roots": roots,
         "D": D,
@@ -606,6 +944,10 @@ def main_impl(args: argparse.Namespace):
         "ITERS": ITERS,
         "THRESHOLD": THRESHOLD,
         "OUTSTRIDE": OUTSTRIDE,
+        "INTERVAL_SIZE": INTERVAL_SIZE,
+        # For sieve 1
+        "SEGMENT_SIZE": SEGMENT_SIZE,
+        "SUBSEGMENT_SIZE": SUBSEGMENT_SIZE,
     }
 
     if args.j:
@@ -639,7 +981,7 @@ def main_impl(args: argparse.Namespace):
             _nr = len(results)
             _np = len(all_primes)
             nb += 1
-            sieved += WORKCHUNK * BLOCK_SIZE
+            sieved += WORKCHUNK * INTERVAL_SIZE
             avg_speed = sieved / (time.monotonic() - start_time)
             rel_speed = _nr / (time.monotonic() - start_time)
             if nb % 10 == 0 and (nb < 1000 or time.monotonic() > last_print + 1.0):
@@ -765,6 +1107,7 @@ def check():
                 count += 1
         dt = time.monotonic() - t0
         logging.info(f"Checked {count} relations in {dt:.3f}s")
+
 
 if __name__ == "__main__":
     main()

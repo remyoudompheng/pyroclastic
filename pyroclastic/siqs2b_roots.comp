@@ -1,0 +1,136 @@
+// Computation of roots for SIQS
+//
+// Inputs:
+// - a factor base (array of u32 primes)
+// - square roots of N (array of u32)
+// - A (big integer stored as array of uint)
+// - Bi (array of uvec3 big integers, with sign bit)
+//
+// Output:
+// - list of sqrt(N)/4A list of polynomial roots (array of uvec2) for each D
+// - list of Bi/4A for each Bi
+//
+// For performance, we precompute partial sums:
+// - 2^4 combinations M - (B0 ± B1 ... ± B4)
+// - 2^4 combinations ± B5 ± ... ± B8
+// - etc.
+//
+// The siever will need to sum 6 elements to obtain the actual root (shifted by M)
+//
+// Arithmetic assumes that primes fit in 24 bits (factor base of ~500k primes)
+
+#version 450
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+
+#if AFACS < 17
+#error AFACS < 17
+#endif
+
+#if (AFACS & 1) != 1
+#error AFACS & 1 != 1
+#endif
+
+layout(binding = 0) readonly buffer Primes { uint primes[]; };
+layout(binding = 1) readonly buffer NRoots { uint nroots[]; };
+layout(binding = 2) buffer PRoots { int proots[]; };
+layout(binding = 3) readonly buffer B { uint[BLEN] b[AFACS]; };
+layout(binding = 4) readonly buffer Args { uint a[BLEN]; };
+
+#include <arith.comp>
+#define modp modp_float
+
+const int M = ITERS * SEGMENT_SIZE / 2;
+const uint AHALF = AFACS / 2;
+const uint ROOT_STRIDE = 1 + 16 + 16 + 16 + 16 + (2 << (AHALF - 8));
+
+int fastmod(int x, uint p, float pinv) {
+  x -= int(p) * int(floor(float(x) * pinv));
+  if (x < 0)
+    x += int(p);
+  return x;
+}
+
+void main() {
+  const uint i = gl_GlobalInvocationID.x;
+  if (i >= primes.length())
+    return;
+  const uint p = primes[i];
+  const uint r = nroots[i];
+  const float pinv = 1.0 / float(p);
+
+  // The result will be incorrect for p=2 and p dividing A
+
+  // Compute 1/4A mod p
+  uint ap = modp(a, p, pinv);
+  int ainv = invmod(int(ap), int(p));
+  ainv = ((ainv & 1) == 0) ? ainv >> 1 : (ainv + int(p)) >> 1;
+
+  uint ra = mulmod(int(r), ainv, p, pinv);
+  uint idx = i * ROOT_STRIDE;
+  // If p divides A (ainv==0), set root to 2^31 to exclude it.
+  proots[idx++] = ainv == 0 ? -1 : int(ra);
+  int ba[AFACS];
+  for (int j = 0; j < AFACS; j++) {
+    uint bp = modp(b[j], p, pinv);
+    ba[j] = int(mulmod(int(bp), ainv, p, pinv));
+  }
+  // Lower half
+  [[unroll]]
+  for (uint j = 0; j < 16; j++) {
+    int pr = ba[0];
+    [[unroll]]
+    for (uint k = 0; k < 4; k++) {
+      pr += (((j >> k) & 1) == 0) ? ba[1 + k] : -ba[1 + k];
+    }
+    proots[idx++] = fastmod(M - pr, p, pinv);
+  }
+  [[unroll]]
+  for (uint j = 0; j < 16; j++) {
+    int pr = 0;
+    [[unroll]]
+    for (uint k = 0; k < 4; k++) {
+      pr += (((j >> k) & 1) == 0) ? ba[5 + k] : -ba[5 + k];
+    }
+    proots[idx++] = fastmod(pr, p, pinv);
+  }
+  [[unroll]]
+  for (uint j = 0; j < 1 << (AHALF - 8); j++) {
+    int pr = 0;
+    [[unroll]]
+    for (uint k = 0; k < (AHALF - 8); k++) {
+      pr += (((j >> k) & 1) == 0) ? ba[9 + k] : -ba[9 + k];
+    }
+    proots[idx++] = fastmod(pr, p, pinv);
+  }
+  [[unroll]]
+  for (uint j = 0; j < 16; j++) {
+    int pr = 0;
+    [[unroll]]
+    for (uint k = 0; k < 4; k++) {
+      pr += (((j >> k) & 1) == 0) ? ba[AHALF + 1 + k] : -ba[AHALF + 1 + k];
+    }
+    proots[idx++] = fastmod(pr, p, pinv);
+  }
+  [[unroll]]
+  for (uint j = 0; j < 16; j++) {
+    int pr = 0;
+    [[unroll]]
+    for (uint k = 0; k < 4; k++) {
+      pr += (((j >> k) & 1) == 0) ? ba[AHALF + 5 + k] : -ba[AHALF + 5 + k];
+    }
+    proots[idx++] = fastmod(pr, p, pinv);
+  }
+  [[unroll]]
+  for (uint j = 0; j < 1 << (AHALF - 8); j++) {
+    int pr = 0;
+    [[unroll]]
+    for (uint k = 0; k < (AHALF - 8); k++) {
+      pr += (((j >> k) & 1) == 0) ? ba[AHALF + 9 + k] : -ba[AHALF + 9 + k];
+    }
+    proots[idx++] = fastmod(pr, p, pinv);
+  }
+}

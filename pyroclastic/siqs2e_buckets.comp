@@ -1,0 +1,140 @@
+// Split sieve reports into buckets before sieve.
+//
+// Each workgroup handles a shard of pre-sieved XXL primes
+// For each shard, split all sieve hits into final buckets.
+
+#version 450
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+
+#include <siqs_common.h>
+
+const uint POLYS_PER_B = BUCKET_INTERVAL / SEGMENT_SIZE;
+// For a 512M/1B sieving area, 256 shards and segment size 8192
+// there are 256/512 buckets per shard.
+const uint BUCKETS_PER_SHARD = POLYS_PER_SHARD / POLYS_PER_B;
+
+// Workgroup size MUST be larger than len(bucklen)
+const uint WGSIZE_MIN = (BUCKETS_PER_SHARD + 31) & ~31;
+const uint WGSIZE_MAX = (2 * BUCKETS_PER_SHARD + 31) & ~31;
+
+layout(local_size_x = clamp(256, WGSIZE_MIN, WGSIZE_MAX), local_size_y = 1,
+       local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Hits { uint hits[]; };
+layout(binding = 1) writeonly buffer HugeOffsets { uint16_t hugeoffs[]; };
+layout(binding = 1) writeonly buffer HugeOffsets32 { uint hugeoffs32[]; };
+
+// To coalesce writes to global memory
+// - assume that number of buckets is a valid workgroup size (<= 512)
+// - up to 16 values per bucket are buffered in local memory
+// - values are moved to registers (32 values per bucket)
+// - writes are batched by blocks of 32 uint16 (64 bytes)
+
+// Warning: buffer lengths must be large enough to receive all work items
+// len(buckbuf) >> local_size_x / len(bucklen)
+// len(items) >> len(buckbuf)
+
+// Number of elements currently in shared memory
+shared uint bucklen[BUCKETS_PER_SHARD];
+shared uint16_t buckbuf[16][BUCKETS_PER_SHARD];
+
+const uint BUFSZ = 16;
+
+// Intermediate buffer for memory writes, holding pairs
+// Should be u16vec2 but uint is better for some compilers.
+uint items2[BUFSZ];
+// Number of element pairs in vector registers
+int ilen;
+// Number of elements already written to global memory
+uint out_offset;
+
+// Computed constants for output buckets
+uint tidx = gl_LocalInvocationID.x;
+uint idxlo = gl_WorkGroupID.x;
+uint out_bucket = idxlo + tidx * SHARDS;
+uint out_bucket_off = out_bucket * BUCKET_SIZE;
+
+void flush() {
+  if (ilen == BUFSZ) {
+    // Flush to global memory
+    const uint boff = out_bucket_off + out_offset;
+    for (uint i = 0; i < BUFSZ; i++) {
+      hugeoffs32[boff / 2 + i] = items2[i];
+    }
+    ilen = 0;
+    out_offset += 2 * BUFSZ;
+  }
+}
+
+void main() {
+  const uint tidx = gl_LocalInvocationID.x;
+  // Start at 1 to skip bucket[0] reserved for length
+  for (uint i = tidx; i < bucklen.length(); i += gl_WorkGroupSize.x) {
+    bucklen[i] = 1;
+  }
+  ilen = 0;
+  out_offset = 0;
+  barrier();
+  memoryBarrierShared();
+  // One workgroup handles a shard
+  const uint shardstride = hits.length() / SHARDS;
+  const uint off = shardstride * gl_WorkGroupID.x;
+  const uint shardlen = hits[off];
+  // Each thread handles an output bucket
+  for (uint i = 0; i * gl_WorkGroupSize.x < shardlen; i++) {
+    const uint hidx = i * gl_WorkGroupSize.x + tidx;
+    if (hidx != 0 && hidx < shardlen) {
+      uint s = hits[off + 1 + hidx];
+      // Bucket index are low bits of the polynomial index
+      const uint poly_idx = s / (8 * INTERVAL);
+      // poly_idx is always shardindex + (high bits)
+      const uint bidx = poly_idx % BUCKETS_PER_SHARD;
+      const uint l = atomicAdd(bucklen[bidx], 1);
+      const uint s2 = (s % (8 * INTERVAL)) +
+                      (poly_idx / BUCKETS_PER_SHARD) * (8 * INTERVAL);
+      buckbuf[l][bidx] = uint16_t(s2);
+    }
+    if (i % 4 == 3) {
+      barrier();
+      memoryBarrierShared();
+      if (tidx < bucklen.length()) {
+        // Collect items from local memory. We only collect full pairs.
+        uint blen = atomicAnd(bucklen[tidx], 1);
+        if (blen > buckbuf.length()) {
+          bucklen[tidx] = 0;
+          blen = buckbuf.length();
+        }
+        for (uint j = blen & 1; j < blen; j += 2) {
+          // FIXME: for some reason pack32 is compiled incorrectly on old AMD
+          // GPUs using the RADV driver
+          // items2[ilen] = pack32(u16vec2(buckbuf[j][tidx], buckbuf[j + 1][tidx]));
+          items2[ilen] =
+              uint(buckbuf[j][tidx]) | (uint(buckbuf[j + 1][tidx]) << 16);
+          ilen++;
+          flush();
+        }
+      }
+      barrier();
+      memoryBarrierShared();
+    }
+  }
+  // Final flush (unoptimized)
+  if (tidx < bucklen.length()) {
+    // Flush items from registers
+    const uint boff = out_bucket_off + out_offset;
+    for (uint i = 0; i < ilen; i++) {
+      hugeoffs32[boff / 2 + i] = items2[i];
+    }
+    out_offset += 2 * ilen;
+
+    // Flush items from local memory
+    const uint blen = bucklen[tidx];
+    for (uint j = 0; j < blen; j++)
+      hugeoffs[boff + 2 * ilen + j] = buckbuf[j][tidx];
+    out_offset += blen;
+
+    hugeoffs[out_bucket_off] = uint16_t(out_offset);
+  }
+}
