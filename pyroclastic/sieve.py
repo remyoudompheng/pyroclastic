@@ -749,6 +749,22 @@ def check():
     dt = time.monotonic() - t0
     logging.info(f"Checked {count} relations in {dt:.3f}s")
 
+    if (datadir / "relations.filtered").is_file():
+        logging.info("Checking filtered relations")
+        t0 = time.monotonic()
+        count = 0
+        with open(datadir / "relations.filtered") as f:
+            for l in f:
+                facs = l.split()
+                q = ideal(1)
+                for f in facs:
+                    p, _, e = f.partition("^")
+                    q = q * ideal(int(p)) ** int(e)
+                # q must be the unit form
+                assert q.q()[0] == 1, (row, q)
+                count += 1
+        dt = time.monotonic() - t0
+        logging.info(f"Checked {count} relations in {dt:.3f}s")
 
 if __name__ == "__main__":
     main()
