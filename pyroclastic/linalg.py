@@ -776,7 +776,7 @@ def worker_task(moduli):
     )
 
 
-def detz(subrels, threads):
+def detz(subrels, threads, logfile=None):
     t0 = time.monotonic()
 
     weight = sum(len(r) for r in subrels)
@@ -813,8 +813,11 @@ def detz(subrels, threads):
             worker_task, itertools.batched(moduli, BATCH_SIZE)
         ):
             if not mods:
-                logging.error(f"Unable to apply Wiedemann algorithm, bailing out")
+                logging.error("Unable to apply Wiedemann algorithm, bailing out")
                 return 0
+            if logfile:
+                for _det, _mod in zip(dets, mods):
+                    print(f"mod {_mod} det {_det}", file=logfile)
             detmod, mod = update_crt(detmod, mod, dets, mods)
             dt = time.monotonic() - t0
             done += len(mods)
@@ -895,14 +898,21 @@ def main_impl(args):
 
     bigdets = []
     d = 0
+    mat_idx = 0
     while d == 0 or d > 10000 * h_app:
+        mat_idx += 1
+        w = open(datadir / f"determinant.{mat_idx}", "w", buffering=1)
         logging.info(f"Selecting new square submatrix (dim {dim})")
         while True:
-            subrels = random.sample(rels, dim)
+            subrels_idx = random.sample(range(len(rels)), dim)
+            subrels = [rels[idx] for idx in subrels_idx]
             if len(basis1) == len(set(p for r in subrels for p, e in r.items() if e)):
+                removed = set(range(len(rels))) - set(subrels_idx)
+                logging.info(f"Square submatrix has removed rows {sorted(removed)}")
+                print(f"submatrix {sorted(removed)}", file=w)
                 break
 
-        detM = detz(subrels, threads=args.j)
+        detM = detz(subrels, threads=args.j, logfile=w)
         if detM == 0:
             logging.error("Matrix has zero determinant, trying again")
             continue
