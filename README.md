@@ -17,20 +17,19 @@ The current implementation should be suitable for discriminants
 between 150 and 550 bits. Larger inputs may be supported depending
 on hardware, smaller inputs may be slower than equivalent CPU implementations.
 
+A single high-end consumer GPU can compute the class group for
+a 512-bit discriminant in a few weeks.
+
+Distributed computation is not supported but appropriate patches can make
+running instances of the program on multiple hosts useful.
+
 ## Hardware requirements
 
-Pyroclastic is written for cheap, modern consumer GPU. GPU specifications
-vary wildly and parameters may not be optimized for all hardware.
+Pyroclastic is written for cheap, modern consumer GPU. Datacenter-oriented
+devices may also be supported if a Vulkan driver is available.
 
-The quadratic sieve steps assumes GPU with fast _local memory_ and
-works best on architectures with more than 64kB local memory per core.
-On modern GPU architectures, local memory will usually allow 16 or 32
-atomic additions per clock cycle, whereas a modern CPU usually allows only
-1-3 L1 random writes per cycle.
-
-For example, when using a Ryzen 7840HS APU, the integrated GPU (Radeon 780M
-with 12CU) will sieve 4x faster than the 8 CPU cores using `yamaquasi` with
-similar parameters.
+GPU specifications vary wildly and parameters may not be optimized for all
+hardware. Manual tweaks are expected to obtain best performance.
 
 ## Computation steps
 
@@ -52,6 +51,31 @@ Each step is available as a separate command:
 An additional command `pyroclastic-smoothrel` can be used to compute
 coordinates for an arbitrary prime ideal. It can run quickly even with
 a low-power GPU.
+
+Multiple GPUs are supported during the `sieve` and `linalg` steps.
+The current implementation assumes that all available GPUs are identical
+and are numbered `0..N` in the Vulkan API.
+
+The sieve has 2 implementations:
+
+* implementation 1 is a standard SIQS where interval size grows with the factor base size,
+  and each polynomial is sieved using roots of all primes from the factor base
+  (computationally intensive but low pressure on memory I/O)
+* implementation 2 uses the idea from Kleinjung in "Quadratic Sieving"
+  to precompute which primes are necessary for each polynomial, which allows
+  shrinking interval size to a very small value (less than 1024).
+  This requires read/writes to large memory buffer, making the sieve much slower.
+  It can be faster (depending on hardware) for discriminant above 400 bits
+
+The sparse matrix-vector product has multiple implementations:
+
+* a "naïve" kernel with multiple variants (single modulus, big modulus, multiple moduli),
+  which is used for the group structure, and can also be used for the class number computation.
+  It is more efficient on NVIDIA devices.
+* a "block COO" kernel dividing the matrix in stripes, where sums are accumulated
+  in shared memory (instead of registers). It can be used during the class number computation.
+  It is more efficient on AMD devices.
+* other kernels exist in the repository for benchmarking purposes
 
 ## Bibliography
 
