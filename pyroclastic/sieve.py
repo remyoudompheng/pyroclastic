@@ -595,7 +595,7 @@ class Siever2:
                 HUGE_PRIME = next(
                     idx
                     for idx, p in enumerate(primes)
-                    if p > 1.5 * INTERVAL_SIZE and p.bit_length() >= AHALF
+                    if p > 8 * INTERVAL_SIZE and p.bit_length() >= AHALF
                 )
                 # Small primes (except 4 tiny, are a multiple of 32)
                 if HUGE_PRIME % 32 != 4:
