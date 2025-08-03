@@ -1,4 +1,4 @@
-# CDISH-like 460-bit prime
+# CSIDH-like 460-bit prime
 
 In this computation, the discriminant is:
 ```

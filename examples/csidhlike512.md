@@ -1,4 +1,4 @@
-# CDISH-like 512-bit prime
+# CSIDH-like 512-bit prime
 
 In this computation, the discriminant is the unique 512-bit prime:
 ```
