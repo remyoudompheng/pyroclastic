@@ -38,6 +38,13 @@ import pyroclastic_flint_extras as flint_extras
 
 
 def to_sparse_matrix(rels, square=True):
+    """
+    Converts a list of relations into a representation suitable
+    for sparse matrix kernels.
+
+    The matrix rows may correspond to an unspecified permutation
+    of input relations.
+    """
     stats = {}
     for r in rels:
         for p in r:
@@ -64,6 +71,23 @@ def to_sparse_matrix(rels, square=True):
     norm_plus = max(sum(abs(e) for p, e in r.items() if e > 0) for r in rels)
     norm_minus = max(sum(abs(e) for p, e in r.items() if e < 0) for r in rels)
 
+    # To reduce divergence, we sort rows by the number of ±signs in the sparse part.
+    dense_set = frozenset(dense_p)
+    sign_rels = []
+    for r in rels:
+        nplus, nminus = 0, 0
+        for _p, _e in r.items():
+            if _p not in dense_p:
+                if _e > 0:
+                    nplus += 1
+                else:
+                    nminus += 1
+        sign_rels.append((nplus, nminus, r))
+    sign_rels.sort(key=lambda t: t[:2])
+    #print([(x, y) for x, y, z in sign_rels])
+    rels = [_r for _, _, _r in sign_rels]
+
+    # Dense coefficients must fit in int8 type
     for r in rels:
         for p in dense_p:
             if p in r:
@@ -75,7 +99,6 @@ def to_sparse_matrix(rels, square=True):
     dense_norm = max(np.sum(np.abs(dense[i, :])) for i in range(len(rels)))
     logging.info(f"Dense block has max row norm {dense_norm}")
 
-    dense_set = frozenset(dense_p)
     primes = dense_p + sorted(p for p in stats if p not in dense_set)
     if square:
         dim = len(primes)
