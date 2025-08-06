@@ -41,6 +41,10 @@ from multiprocessing import Pool, Semaphore, current_process
 import numpy as np
 import kp
 import flint
+try:
+    import pymqs
+except ImportError:
+    pymqs = None
 
 import pyroclastic_flint_extras as flint_extras
 from . import algebra
@@ -190,7 +194,10 @@ def build_relation(value, idx, facs, B1=None, B2=None):
             v //= f
     if v == 1:
         return row
-    cofacs = flint.fmpz(v).factor_smooth(bits=B2.bit_length() if B2 else 20)
+    if pymqs is not None:
+        cofacs = [(_l, 1) for _l in pymqs.factor(v)]
+    else:
+        cofacs = flint.fmpz(v).factor_smooth(bits=B2.bit_length() if B2 else 20)
     for _p, _e in cofacs:
         if not flint.fmpz(_p).is_prime():
             return None

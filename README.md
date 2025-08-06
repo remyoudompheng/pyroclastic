@@ -67,6 +67,11 @@ The sieve has 2 implementations:
   This requires read/writes to large memory buffer, making the sieve much slower.
   It can be faster (depending on hardware) for discriminant above 400 bits
 
+Cofactorization is handled using CPU only, using the FLINT library, which may create
+a bottleneck on hosts with a small CPU and a large GPU. If the Python bindings to
+`yamaquasi` (module `pymqs`) is found in the Python environment, it will be used
+instead: it usually results in lower CPU usage.
+
 The sparse matrix-vector product has multiple implementations:
 
 * a "naïve" kernel with multiple variants (single modulus, big modulus, multiple moduli),
