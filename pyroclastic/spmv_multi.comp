@@ -32,6 +32,8 @@
 #define UWORD_T uint
 #endif
 
+#define MODULI_PER_THREAD 4
+
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
@@ -39,7 +41,8 @@
 #extension GL_EXT_shader_atomic_int64 : require
 
 // Each thread handles a modulus (x) and row (y)
-layout(local_size_x = MODULI, local_size_y = BATCH_ROW, local_size_z = 1) in;
+layout(local_size_x = MODULI / MODULI_PER_THREAD, local_size_y = BATCH_ROW,
+       local_size_z = 1) in;
 
 layout(binding = 0) readonly buffer Dense { int8_t dense[]; };
 layout(binding = 1) readonly buffer SparsePlus { uint16_t plus[]; };
@@ -75,11 +78,17 @@ void main() {
   uint row = gl_GlobalInvocationID.y;
   if (row >= N)
     return;
-  WORD_T acc = 0;
+  WORD_T acc[MODULI_PER_THREAD];
+  for (uint j = 0; j < MODULI_PER_THREAD; j++)
+    acc[j] = 0;
   // Dense block
   uint dense_base = row * DENSE_N;
   for (uint i = 0; i < DENSE_N; i++) {
-    acc += WORD_T(dense[dense_base + i]) * WORD_T(v[off0 + MODULI * i + midx]);
+    for (uint j = 0; j < MODULI_PER_THREAD; j++)
+      acc[j] +=
+          WORD_T(dense[dense_base + i]) *
+          WORD_T(
+              v[off0 + MODULI * i + midx + j * (MODULI / MODULI_PER_THREAD)]);
   }
   // +1 coefficients
   uint plus0 = idxPlus[row];
@@ -91,7 +100,9 @@ void main() {
       base += 0xffff;
       continue;
     }
-    acc += WORD_T(v[off0 + MODULI * (base + c) + midx]);
+    for (uint j = 0; j < MODULI_PER_THREAD; j++)
+      acc[j] += WORD_T(v[off0 + MODULI * (base + c) + midx +
+                         j * (MODULI / MODULI_PER_THREAD)]);
   }
   // -1 coefficients
   uint minus0 = idxMinus[row];
@@ -103,14 +114,21 @@ void main() {
       base += 0xffff;
       continue;
     }
-    acc -= WORD_T(v[off0 + MODULI * (base + c) + midx]);
+    for (uint j = 0; j < MODULI_PER_THREAD; j++)
+      acc[j] -= WORD_T(v[off0 + MODULI * (base + c) + midx +
+                         j * (MODULI / MODULI_PER_THREAD)]);
   }
   // Output result to next row
-  const UWORD_T uacc = fastmod(acc, moduli[midx]);
-  v[off1 + MODULI * row + midx] = uacc;
+  for (uint j = 0; j < MODULI_PER_THREAD; j++) {
+    const UWORD_T uacc =
+        fastmod(acc[j], moduli[midx + j * (MODULI / MODULI_PER_THREAD)]);
+    v[off1 + MODULI * row + midx + j * (MODULI / MODULI_PER_THREAD)] = uacc;
+    if (gl_LocalInvocationID.y == wsel[gl_WorkGroupID.y]) {
+      atomicAdd(wout[MODULI * idx + midx + j * (MODULI / MODULI_PER_THREAD)],
+                uacc);
+    }
+  }
   barrier();
   if (gl_LocalInvocationID == uvec3(0))
     iter[gl_WorkGroupID.y] = idx + 1;
-  if (gl_LocalInvocationID.y == wsel[gl_WorkGroupID.y])
-    atomicAdd(wout[MODULI * idx + midx], uacc);
 }
