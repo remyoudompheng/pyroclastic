@@ -62,6 +62,11 @@ cdef extern from "flint/nmod_types.h":
 cdef extern from "flint/nmod_poly.h":
     slong nmod_poly_degree(const nmod_poly_t poly)
     ulong nmod_poly_get_coeff_ui(const nmod_poly_t poly, slong j)
+    void nmod_poly_set_trunc(nmod_poly_t res, const nmod_poly_t poly, slong len)
+    void nmod_poly_truncate(nmod_poly_t poly, slong len)
+    void nmod_poly_shift_right(nmod_poly_t res, const nmod_poly_t poly, slong k)
+    void nmod_poly_mullow(nmod_poly_t res, const nmod_poly_t poly1, const nmod_poly_t poly2, slong trunc)
+    void nmod_poly_mulhigh(nmod_poly_t res, const nmod_poly_t poly1, const nmod_poly_t poly2, slong n)
 
     void nmod_berlekamp_massey_init(nmod_berlekamp_massey_t B, ulong p)
     void nmod_berlekamp_massey_clear(nmod_berlekamp_massey_t B)
@@ -111,6 +116,50 @@ def berlekamp_massey(seq: list[int], p: int) -> list[int]:
     for i from 0 <= i <= deg:
         res.append(nmod_poly_get_coeff_ui(v, i))
     nmod_berlekamp_massey_clear(B)
+    return res
+
+cdef class nmod_poly:
+    cdef nmod_poly_t val
+    # Dummy declarations to ensure binary compability
+    cpdef long length(self):
+        raise
+    cpdef long degree(self):
+        raise
+    cpdef long modulus(self):
+        raise
+
+def nmod_poly_mul_low(p, q, slong n):
+    assert isinstance(p, flint.nmod_poly) and isinstance(q, flint.nmod_poly)
+    assert p.modulus() == q.modulus()
+
+    res = flint.nmod_poly([], p.modulus())
+    cdef nmod_poly_struct *pres = &(<nmod_poly>res).val[0]
+    nmod_poly_mullow(pres, (<nmod_poly>p).val, (<nmod_poly>q).val, n)
+    return res
+
+def nmod_poly_mul_high(p, q, slong n):
+    assert isinstance(p, flint.nmod_poly) and isinstance(q, flint.nmod_poly)
+    assert p.modulus() == q.modulus()
+
+    res = flint.nmod_poly([], p.modulus())
+    cdef nmod_poly_struct *pres = &(<nmod_poly>res).val[0]
+    nmod_poly_mulhigh(pres, (<nmod_poly>p).val, (<nmod_poly>q).val, n)
+    return res
+
+def nmod_poly_clamp(poly, ulong d0, ulong d1):
+    assert isinstance(poly, flint.nmod_poly)
+
+    cdef const nmod_poly_struct *p = &(<nmod_poly>poly).val[0]
+    nmod_poly_truncate(p, d1)
+    nmod_poly_shift_right(p, p, d0)
+
+def nmod_poly_copy_trunc(poly, ulong d):
+    assert isinstance(poly, flint.nmod_poly)
+
+    res = flint.nmod_poly([], poly.modulus())
+    cdef const nmod_poly_struct *p = &(<nmod_poly>poly).val[0]
+    cdef nmod_poly_struct *pres = &(<nmod_poly>res).val[0]
+    nmod_poly_set_trunc(pres, p, d)
     return res
 
 def sqrtmod(a: int, p: int):
