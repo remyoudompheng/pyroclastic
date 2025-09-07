@@ -25,6 +25,10 @@
 #error MODULI undefined
 #endif
 
+#ifndef BLOCKM
+#define BLOCKM 1
+#endif
+
 #ifdef INT64
 #define WORD_T int64_t
 #define UWORD_T uint64_t
@@ -61,7 +65,7 @@ layout(binding = 4) coherent buffer Iter { uint iter[]; };
 layout(binding = 5) coherent buffer Wsel { uint8_t wsel[]; };
 // Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
 // wsel[idx]=1)
-layout(binding = 6) coherent buffer Wout { uint64_t wout[]; };
+layout(binding = 6) coherent buffer Wout { uint64_t[BLOCKM] wout[]; };
 layout(binding = 7) readonly buffer Moduli { UWORD_T moduli[]; };
 
 shared WORD_T acc[BM * MODULI];
@@ -155,10 +159,12 @@ void main() {
 
   if (tidx == 0)
     iter[gl_WorkGroupID.y * gl_NumWorkGroups.x + stripe] = witer + 1;
-  if (tidx == wsel[stripe]) {
-    for (uint j = 0; j < MODULI; j++) {
-      atomicAdd(wout[(gl_NumWorkGroups.y * MODULI) * witer + j0 + j],
-                fastmod(acc[BM * j + tidx], moduli[j0 + j]));
+  for (uint j = 0; j < MODULI; j++) {
+    for (uint m = 0; m < BLOCKM; m++) {
+      if ((tidx + m) % BM == wsel[stripe]) {
+        atomicAdd(wout[(gl_NumWorkGroups.y * MODULI) * witer + j0 + j][m],
+                  fastmod(acc[BM * j + tidx], moduli[j0 + j]));
+      }
     }
   }
 }

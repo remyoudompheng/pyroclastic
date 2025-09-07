@@ -24,6 +24,10 @@
 #error BATCH_ROW undefined
 #endif
 
+#ifndef BLOCKM
+#define BLOCKM 1
+#endif
+
 #ifdef INT64
 #define WORD_T int64_t
 #define UWORD_T uint64_t
@@ -56,10 +60,10 @@ layout(binding = 5) buffer V { UWORD_T v[]; };
 // Vector of identical values (1 per workgroup) indicating iteration count
 layout(binding = 6) buffer Iter { uint iter[]; };
 // Output mask for Wiedemann algorithm sequence.
-layout(binding = 7) coherent buffer Wsel { uint8_t wsel[]; };
+layout(binding = 7) readonly buffer Wsel { uint8_t wsel[]; };
 // Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
 // wsel[idx]=1)
-layout(binding = 8) coherent buffer Wout { uint64_t wout[]; };
+layout(binding = 8) coherent buffer Wout { uint64_t[BLOCKM] wout[]; };
 layout(binding = 9) readonly buffer Moduli { UWORD_T moduli[]; };
 
 UWORD_T fastmod(WORD_T x, UWORD_T p) {
@@ -78,6 +82,7 @@ void main() {
   uint row = gl_GlobalInvocationID.y;
   if (row >= N)
     return;
+  const uint wsely = wsel[gl_WorkGroupID.y];
   WORD_T acc[MODULI_PER_THREAD];
   for (uint j = 0; j < MODULI_PER_THREAD; j++)
     acc[j] = 0;
@@ -119,12 +124,18 @@ void main() {
                          j * (MODULI / MODULI_PER_THREAD)]);
   }
   // Output result to next row
+  uint m = -1;
+  if (wsely < BATCH_ROW) {
+    m = (wsely - gl_LocalInvocationID.y) % BATCH_ROW;
+  }
   for (uint j = 0; j < MODULI_PER_THREAD; j++) {
     const UWORD_T uacc =
         fastmod(acc[j], moduli[midx + j * (MODULI / MODULI_PER_THREAD)]);
     v[off1 + MODULI * row + midx + j * (MODULI / MODULI_PER_THREAD)] = uacc;
-    if (gl_LocalInvocationID.y == wsel[gl_WorkGroupID.y]) {
-      atomicAdd(wout[MODULI * idx + midx + j * (MODULI / MODULI_PER_THREAD)],
+    // Note: on NVIDIA platforms there should be a single atomicAdd call
+    // to avoid a signiificant performance hit.
+    if (m < BLOCKM) {
+      atomicAdd(wout[MODULI * idx + midx + j * (MODULI / MODULI_PER_THREAD)][m],
                 uacc);
     }
   }

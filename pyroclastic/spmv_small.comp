@@ -21,6 +21,10 @@
 #error Dense width undefined
 #endif
 
+#ifndef BLOCKM
+#define BLOCKM 1
+#endif
+
 #ifdef INT64
 #define WORD_T int64_t
 #define UWORD_T uint64_t
@@ -55,7 +59,7 @@ layout(binding = 4) coherent buffer Iter { uint iter[]; };
 layout(binding = 5) coherent buffer Wsel { uint8_t wsel[]; };
 // Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
 // wsel[idx]=1)
-layout(binding = 6) coherent buffer Wout { uint64_t wout[]; };
+layout(binding = 6) coherent buffer Wout { uint64_t[BLOCKM] wout[]; };
 layout(binding = 7) readonly buffer Moduli { UWORD_T moduli[]; };
 
 shared UWORD_T vin[N];
@@ -146,8 +150,10 @@ void main() {
       // Output result to next row
       acc = fastmod(acc, p, pinv);
       accs[b] = acc;
-      if (row % 256 == wsel[row / 256])
-        atomicAdd(wout[witer * moduli.length() + midx], acc);
+      for (uint m = 0; m < BLOCKM; m++) {
+        if ((row + m) % 256 == wsel[row / 256])
+          atomicAdd(wout[witer * moduli.length() + midx][m], acc);
+      }
     }
     barrier();
     // Flush to shmem
