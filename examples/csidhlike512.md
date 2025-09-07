@@ -38,7 +38,7 @@ This computation was done without the SIQS initialization optimization
 from [Kleinjung, Quadratic Sieving](https://www.ams.org/journals/mcom/2016-85-300/S0025-5718-2015-03058-0/S0025-5718-2015-03058-0.pdf)
 
 * the sieving bound was B1=7500000 (254219 primes)
-* the bound for large primes was 60 B1 = 600M
+* the bound for large primes was 80 B1 = 600M
 * polynomials had leading coefficients A with 12 factors (2048 polynomials each)
 * each polynomial was sieved over an interval of size 983040 (60 segments of 16kB)
 * the threshold for reporting sieve results was 184 bits (3 large primes allowed)
