@@ -24,7 +24,11 @@ import numpy
 import flint
 
 from pyroclastic import algebra
-from pyroclastic_flint_extras import nmod_poly_clamp, nmod_poly_copy_trunc, nmod_poly_mul_low
+from pyroclastic_flint_extras import (
+    nmod_poly_clamp,
+    nmod_poly_copy_trunc,
+    nmod_poly_mul_low,
+)
 
 
 def random_poly(d, p):
@@ -49,8 +53,10 @@ def block_wiedemann_step(E, delta, p, P=None):
         if i < argmin:
             delta[i], delta[argmin] = delta[argmin], delta[i]
             # Fancy numpy syntax for swapping
-            P[:, [i, argmin]] = P[:, [argmin, i]]
-            E[:, [i, argmin]] = E[:, [argmin, i]]
+            for j in range(mn):
+                P[j, i], P[j, argmin] = P[j, argmin], P[j, i]
+            for j in range(m):
+                E[j, i], E[j, argmin] = E[j, argmin], E[j, i]
     # Eliminate without increasing degree (col[j] is cancelled using col[j0<j])
     nonzero = set()
     for i in range(m):
@@ -63,8 +69,10 @@ def block_wiedemann_step(E, delta, p, P=None):
         # Use it to eliminate next columns
         for j in range(j0 + 1, mn):
             k = E[i, j][0] / E[i, j0][0]
-            E[:, j] -= k * E[:, j0]
-            P[:, j] -= k * P[:, j0]
+            for h in range(m):
+                E[h, j] -= k * E[h, j0]
+            for h in range(mn):
+                P[h, j] -= k * P[h, j0]
     if False:
         for i, j in numpy.ndindex(*E.shape):
             if E[i, j][0]:
