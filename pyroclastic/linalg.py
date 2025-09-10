@@ -866,6 +866,7 @@ def main():
         help="Number of GPUs (usually a divisor of THREADS)",
     )
     p.add_argument("--bench", action="store_true")
+    p.add_argument("--deterministic", action="store_true")
     p.add_argument("DATADIR")
     args = p.parse_args()
 
@@ -877,6 +878,9 @@ def main():
 
 
 def main_impl(args):
+    if args.deterministic:
+        random.seed(1)
+
     while len(GPU_LOCK) < args.ngpu:
         GPU_LOCK.append(Semaphore(2))
 
