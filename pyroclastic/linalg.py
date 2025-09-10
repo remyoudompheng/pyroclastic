@@ -17,6 +17,7 @@ D = 400 bits => dim 50000
 """
 
 from contextlib import nullcontext
+from concurrent.futures import ProcessPoolExecutor
 import itertools
 import json
 import logging
@@ -32,6 +33,7 @@ import numpy as np
 
 from . import algebra
 from . import linalg_alt
+from . import lingen
 from . import gpu
 from . import relations
 import pyroclastic_flint_extras as flint_extras
@@ -84,7 +86,7 @@ def to_sparse_matrix(rels, square=True):
                     nminus += 1
         sign_rels.append((nplus, nminus, r))
     sign_rels.sort(key=lambda t: t[:2])
-    #print([(x, y) for x, y, z in sign_rels])
+    # print([(x, y) for x, y, z in sign_rels])
     rels = [_r for _, _, _r in sign_rels]
 
     # Dense coefficients must fit in int8 type
@@ -204,7 +206,7 @@ class CSRMatrix:
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight:.1f})"
         )
 
-    def wiedemann_multi(self, ls: list[int], check=False, lock=None, bench=False):
+    def krylov(self, ls: list[int], blockm=1, lock=None, bench=False):
         "Perform Wiedemann algorithm for multiple small moduli"
         MODULI = len(ls)
         if any(l.bit_length() > 32 for l in ls):
@@ -222,7 +224,7 @@ class CSRMatrix:
             BATCHSIZE = 32
         else:
             BATCHSIZE = 16
-        ITERS = 2 * dim
+        ITERS = dim + dim // blockm + 1
         ITERS = (ITERS // BATCHSIZE + 2) * BATCHSIZE
         if bench:
             ITERS = 1024
@@ -237,11 +239,13 @@ class CSRMatrix:
                 sel[i] = random.randrange(min(dim - i * SEL_BLOCK, SEL_BLOCK))
         xsel = mgr.tensor_t(sel.view(np.uint32))
         # Output sequence out[k] = S M^k V
-        xout = mgr.tensor_t(np.zeros(MODULI * ITERS, dtype=np.uint64).view(np.uint32))
+        xout = mgr.tensor_t(
+            np.zeros(MODULI * blockm * ITERS, dtype=np.uint64).view(np.uint32)
+        )
         xmod = mgr.tensor_t(np.array(ls, dtype=word_t).view(np.uint32))
 
         xd, xrows, xidx = self.tensors
-        defines = self.defines | {"BATCHSIZE": BATCHSIZE}
+        defines = self.defines | {"BATCHSIZE": BATCHSIZE, "BLOCKM": blockm}
         if INT64:
             defines |= {"INT64": 1}
         kernel = gpu.compile("spmv_small.comp", defines)
@@ -259,7 +263,6 @@ class CSRMatrix:
         v = xv.data().view(word_t).reshape((MODULI, dim))
         for i, l in enumerate(ls):
             v[i, :] = np.random.randint(0, l, dim, dtype=word_t)
-        sequence = []
         mgr.sequence().record(kp.OpTensorSyncDevice([xiter, xv])).eval()
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
@@ -282,45 +285,21 @@ class CSRMatrix:
                 gpu_ticks += stamps[-1] - stamps[0]
 
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
-        vout = xout.data().view(np.uint64).reshape((ITERS, MODULI))
+        vout = xout.data().view(np.uint64).reshape((ITERS, MODULI, blockm))
 
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
         flops = self.flops * ITERS * MODULI / gpu_dt
         speed = ITERS * MODULI / gpu_dt
-
-        dets = []
-        ls_good = []
-        for i, li in enumerate(ls):
-            if bench:
-                break
-            sequence = [int(x) % li for x in vout[:, i]]
-
-            poly = flint_extras.berlekamp_massey(sequence, li)
-            assert len(poly) <= dim + 1, len(poly)
-            # polys.append(poly)
-            if len(poly) <= dim:
-                logging.error(
-                    f"Skip modulus {li}, minimal polynomial has degree {len(poly) - 1} < {dim}"
-                )
-                continue
-            assert len(poly) == dim + 1, len(poly)
-            det = -poly[0] * pow(poly[dim], -1, li) % li
-            dets.append(det)
-            ls_good.append(li)
-            if check:
-                assert check_wiedemann(sequence, poly, li)
-                assert len(poly) == dim + 1, len(poly)
-                det = -poly[0] * pow(poly[dim], -1, li) % li
-                if i < 5 or i > len(ls) - 5:
-                    logging.info(
-                        f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
-                    )
-
         dt = time.monotonic() - t0
+
         logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Krylov completed in {dt:.3}s (GPU {gpu_dt:.3f}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
-        return dets, ls_good
+
+        return {
+            l: [vout[:, lidx, j] for j in range(blockm)]
+            for lidx, l in enumerate(ls)
+        }
 
     def matmul_small(self, l: int, v):
         "For testing"
@@ -627,7 +606,7 @@ class BlockCOO:
         v = xv.data().view(word_t).reshape((2, 1, dim))
         return np.copy(v[1, 0, :])
 
-    def wiedemann_multi(self, ls: list[int], check=False, lock=None, bench=False):
+    def krylov(self, ls: list[int], blockm=1, lock=None, bench=False):
         """
         Perform Wiedemann algorithm for multiple small moduli
 
@@ -658,7 +637,8 @@ class BlockCOO:
             BATCHSIZE = 16
         else:
             BATCHSIZE = 8
-        ITERS = (2 * dim // BATCHSIZE + 2) * BATCHSIZE
+        ITERS = dim + dim // blockm + 16
+        ITERS = (ITERS // BATCHSIZE + 2) * BATCHSIZE
         if bench:
             ITERS = 1024
         # Tensor holding M^k V and M^(k+1) V
@@ -673,11 +653,17 @@ class BlockCOO:
         xsel = mgr.tensor_t(sel.view(np.uint32))
         xiter = mgr.tensor_t(np.zeros(N_WG * MOD_WG, dtype=np.uint32))
         # Output sequence out[k] = S M^k V
-        xout = mgr.tensor_t(np.zeros(MODULI * ITERS, dtype=np.uint64).view(np.uint32))
+        xout = mgr.tensor_t(
+            np.zeros(MODULI * blockm * ITERS, dtype=np.uint64).view(np.uint32)
+        )
         xmod = mgr.tensor_t(np.array(ls, dtype=word_t).view(np.uint32))
 
         xd, xsparse, xidx = self.tensors
-        defines = self.defines | {"BM": BM, "MODULI": MODULI // MOD_WG}
+        defines = self.defines | {
+            "BM": BM,
+            "MODULI": MODULI // MOD_WG,
+            "BLOCKM": blockm,
+        }
         if INT64:
             defines["INT64"] = 1
         kernel = gpu.compile("spmv_blockcoo3.comp", defines)
@@ -721,35 +707,19 @@ class BlockCOO:
                 gpu_ticks += stamps[-1] - stamps[0]
 
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
-        vout = xout.data().view(np.uint64).reshape((ITERS, MODULI))
+        vout = xout.data().view(np.uint64).reshape((ITERS, MODULI, blockm))
 
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
         flops = self.flops * ITERS * MODULI / gpu_dt
         speed = ITERS * MODULI / gpu_dt
 
-        dets = []
-        for i, li in enumerate(ls):
-            if bench:
-                break
-            sequence = [int(x) % li for x in vout[:, i]]
-            poly = flint_extras.berlekamp_massey(sequence, li)
-            assert len(poly) == dim + 1
-            det = -poly[0] * pow(poly[dim], -1, li) % li
-            dets.append(det)
-            if check:
-                assert check_wiedemann(sequence, poly, li)
-                assert len(poly) == dim + 1
-                det = -poly[0] * pow(poly[dim], -1, li) % li
-                if i < 5 or i > len(ls) - 5:
-                    logging.info(
-                        f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
-                    )
-
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Krylov completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
-        return dets, ls
+        return {
+            l: [vout[:, lidx, j] for j in range(blockm)] for lidx, l in enumerate(ls)
+        }
 
 
 def update_crt(bigres, bigmod, res, mod):
@@ -774,6 +744,7 @@ def update_crt(bigres, bigmod, res, mod):
 
 
 WORKER_M = None
+BLOCKM = 2
 
 GPU_LOCK = [Semaphore(1)]
 
@@ -794,12 +765,10 @@ def worker_init(*initargs):
 
 
 def worker_task(moduli):
-    return WORKER_M.wiedemann_multi(
-        moduli, check=False, lock=GPU_LOCK[WORKER_M.gpu_idx]
-    )
+    return WORKER_M.krylov(moduli, blockm=BLOCKM, lock=GPU_LOCK[WORKER_M.gpu_idx])
 
 
-def detz(subrels, threads, logfile=None):
+def detz(subrels, threads, cputhreads: int | None, logfile=None):
     t0 = time.monotonic()
 
     weight = sum(len(r) for r in subrels)
@@ -831,23 +800,39 @@ def detz(subrels, threads, logfile=None):
     # Create new locks for each pool
     for i in range(len(GPU_LOCK)):
         GPU_LOCK[i] = Semaphore(1)
+    logging.info(f"Expected Krylov sequence length {dim + dim // BLOCKM + 1}")
     with Pool(threads, initializer=worker_init, initargs=margs) as mat_pool:
-        for dets, mods in mat_pool.imap_unordered(
-            worker_task, itertools.batched(moduli, BATCH_SIZE)
-        ):
-            if not mods:
-                logging.error("Unable to apply Wiedemann algorithm, bailing out")
-                return 0
-            if logfile:
-                for _det, _mod in zip(dets, mods):
-                    print(f"mod {_mod} det {_det}", file=logfile)
-            detmod, mod = update_crt(detmod, mod, dets, mods)
-            dt = time.monotonic() - t0
-            done += len(mods)
-            logging.info(f"Computed determinants for {done} moduli in {dt:.3f}s")
-            if detmod.bit_length() + 128 < mod.bit_length():
-                logging.info(f"Found determinant (size {detmod.bit_length()} bits)")
-                return detmod
+        with ProcessPoolExecutor(max_workers=cputhreads) as lingen_pool:
+            for krys in mat_pool.imap_unordered(
+                worker_task, itertools.batched(moduli, BATCH_SIZE), chunksize=1
+            ):
+                jobs = []
+                for l, seqs in krys.items():
+                    ljob = lingen_pool.submit(lingen.generating_polynomial_multi,
+                                       [list(map(int, s)) for s in seqs],
+                                       dim, l)
+                    jobs.append((l, ljob))
+
+                dets, mods = [] ,[]
+                for l, ljob in jobs:
+                    pol = ljob.result()
+                    if len(pol) != dim + 1:
+                        logging.error(f"Failed determinant for modulus {l}")
+                        continue
+                    # Ignore (-1)^dim sign
+                    dets.append(pol[0])
+                    mods.append(l)
+
+                if logfile:
+                    for _det, _mod in zip(dets, mods):
+                        print(f"mod {_mod} det {_det}", file=logfile)
+                detmod, mod = update_crt(detmod, mod, dets, mods)
+                dt = time.monotonic() - t0
+                done += len(mods)
+                logging.info(f"Computed determinants for {done} moduli in {dt:.3f}s")
+                if detmod.bit_length() + 128 < mod.bit_length():
+                    logging.info(f"Found determinant (size {detmod.bit_length()} bits)")
+                    return detmod
 
 
 def main():
@@ -865,7 +850,14 @@ def main():
         default=1,
         help="Number of GPUs (usually a divisor of THREADS)",
     )
+    p.add_argument(
+        "--ncpu",
+        type=int,
+        default=None,
+        help="Number of CPU threads for (block) Wiedemann",
+    )
     p.add_argument("--bench", action="store_true")
+    p.add_argument("--checkbench", action="store_true")
     p.add_argument("--deterministic", action="store_true")
     p.add_argument("DATADIR")
     args = p.parse_args()
@@ -913,7 +905,7 @@ def main_impl(args):
         rels = filtered
 
     if args.bench:
-        bench(rels)
+        bench(rels, check=args.checkbench)
         return
 
     basis1 = sorted(set(p for r in rels for p, e in r.items() if e))
@@ -939,7 +931,7 @@ def main_impl(args):
                 print(f"submatrix {sorted(removed)}", file=w)
                 break
 
-        detM = detz(subrels, threads=args.j, logfile=w)
+        detM = detz(subrels, threads=args.j, cputhreads=args.ncpu, logfile=w)
         if detM == 0:
             logging.error("Matrix has zero determinant, trying again")
             continue
@@ -971,7 +963,7 @@ def main_impl(args):
         print(h, file=f)
 
 
-def bench(rels):
+def bench(rels, check=False):
     from .linalg_alt import SpMV
 
     random.seed(42)
@@ -1003,7 +995,7 @@ def bench(rels):
     # print("Rows -1")
     # print(minus[:10], "...")
 
-    CHECK = False
+    CHECK = check
     BENCH = not CHECK
 
     moduli = [
@@ -1013,33 +1005,47 @@ def bench(rels):
         x for x in range(max_mod64 - 10000, max_mod64) if flint.fmpz(x).is_prime()
     ][:3] + moduli[3:]
 
+    BLOCKM = 1
+    def wiedemann_multi(M, *args, **kwargs):
+        nonlocal CHECK
+        kwargs = kwargs | {"blockm": BLOCKM}
+        res = M.krylov(*args, **kwargs)
+        if CHECK:
+            ls = sorted(res)
+            for lidx, l in enumerate(ls):
+                seqs = [list(map(int, s)) for s in res[l]]
+                if lidx < 5 or lidx > len(ls) - 5:
+                    pol = lingen.generating_polynomial_multi(seqs, M.dim, l)
+                    det = -pol[0] if M.dim & 1 == 1 else pol[0]
+                    logging.info(f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det % l}")
+
     Mat = SpMV(dense, plus, minus, basis, weight)
     logging.info("Running with 1 modulus (naive kernel)")
     Mat.wiedemann(moduli[0], check=CHECK, bench=BENCH)
     logging.info("Running with 16 moduli (naive kernel)")
-    Mat.wiedemann_multi(moduli[:16], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat, moduli[:16], bench=BENCH)
     logging.info("Running with 32 moduli (naive kernel)")
-    Mat.wiedemann_multi(moduli[:32], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat, moduli[:32], bench=BENCH)
     logging.info("Running with 64 moduli (naive kernel)")
-    Mat.wiedemann_multi(moduli[:64], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat, moduli[:64], bench=BENCH)
     logging.info("Running with 128 moduli (naive kernel)")
-    Mat.wiedemann_multi(moduli[:128], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat, moduli[:128], bench=BENCH)
 
     logging.info("Running with 32 moduli64 (naive kernel)")
-    Mat.wiedemann_multi(moduli64[:32], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat, moduli64[:32], bench=BENCH)
     logging.info("Running with 64 moduli64 (naive kernel)")
-    Mat.wiedemann_multi(moduli64[:64], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat, moduli64[:64], bench=BENCH)
 
     if dim < 32768:
         # indices must fit int16
         Mat1 = CSRMatrix(dense, plus, minus, basis, weight)
         if dim < gpu.max_shmem() // 4:
             logging.info("Running with 16 moduli (small)")
-            Mat1.wiedemann_multi(moduli[:16], check=CHECK, bench=BENCH)
+            wiedemann_multi(Mat1, moduli[:16], bench=BENCH)
             logging.info("Running with 64 moduli (small)")
-            Mat1.wiedemann_multi(moduli[:64], check=CHECK, bench=BENCH)
+            wiedemann_multi(Mat1, moduli[:64], bench=BENCH)
             logging.info("Running with 128 moduli (small)")
-            Mat1.wiedemann_multi(moduli[:128], check=CHECK, bench=BENCH)
+            wiedemann_multi(Mat1, moduli[:128], bench=BENCH)
 
         # FIXME: broken?
         # logging.info("Running with 16 moduli (medium)")
@@ -1049,28 +1055,28 @@ def bench(rels):
 
     if dim < gpu.max_shmem() // 8:
         logging.info("Running with 16 moduli64 (small)")
-        Mat1.wiedemann_multi(moduli64[:16], check=CHECK, bench=BENCH)
+        wiedemann_multi(Mat1, moduli64[:16], bench=BENCH)
         logging.info("Running with 64 moduli64 (small)")
-        Mat1.wiedemann_multi(moduli64[:64], check=CHECK, bench=BENCH)
+        wiedemann_multi(Mat1, moduli64[:64], bench=BENCH)
         logging.info("Running with 128 moduli64 (small)")
-        Mat1.wiedemann_multi(moduli64[:128], check=CHECK, bench=BENCH)
+        wiedemann_multi(Mat1, moduli64[:128], bench=BENCH)
 
     Mat2 = BlockCOO(dense, plus, minus, basis, weight)
     logging.info("Running BlockCOO v3 with 1 moduli")
-    Mat2.wiedemann_multi(moduli[:1], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat2, moduli[:1], bench=BENCH)
     logging.info("Running BlockCOO v3 with 8 moduli")
-    Mat2.wiedemann_multi(moduli[:8], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat2, moduli[:8], bench=BENCH)
     logging.info("Running BlockCOO v3 with 16 moduli")
-    Mat2.wiedemann_multi(moduli[:16], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat2, moduli[:16], bench=BENCH)
     logging.info("Running BlockCOO v3 with 32 moduli")
-    Mat2.wiedemann_multi(moduli[:32], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat2, moduli[:32], bench=BENCH)
 
     logging.info("Running BlockCOO v3 with 1 moduli64")
-    Mat2.wiedemann_multi(moduli64[:1], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat2, moduli64[:1], bench=BENCH)
     logging.info("Running BlockCOO v3 with 8 moduli64")
-    Mat2.wiedemann_multi(moduli64[:8], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat2, moduli64[:8], bench=BENCH)
     logging.info("Running BlockCOO v3 with 16 moduli64")
-    Mat2.wiedemann_multi(moduli64[:16], check=CHECK, bench=BENCH)
+    wiedemann_multi(Mat2, moduli64[:16], bench=BENCH)
 
 
 if __name__ == "__main__":

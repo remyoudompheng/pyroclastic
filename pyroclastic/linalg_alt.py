@@ -229,7 +229,7 @@ class SpMV:
 
         return poly
 
-    def wiedemann_multi(self, ls: list[int], check=False, lock=None, bench=False):
+    def krylov(self, ls: list[int], blockm=1, lock=None, bench=False):
         "Perform Wiedemann algorithm for multiple small moduli"
         MODULI = len(ls)
         assert MODULI in (1, 2, 4, 8, 16, 32, 64, 128)
@@ -249,7 +249,7 @@ class SpMV:
             BATCHSIZE = 64
         else:
             BATCHSIZE = 16
-        ITERS = 2 * dim
+        ITERS = dim + dim // blockm + 16
         ITERS = (ITERS // BATCHSIZE + 2) * BATCHSIZE
         if bench:
             ITERS = 1024
@@ -273,11 +273,11 @@ class SpMV:
                 sel[i] = random.randrange(BATCH_ROW)
         xsel = mgr.tensor_t(sel.view(np.uint32))
         # Output sequence out[k] = S M^k V
-        xout = mgr.tensor_t(np.zeros(MODULI * ITERS, dtype=np.uint64).view(np.uint32))
+        xout = mgr.tensor_t(np.zeros(MODULI * ITERS * blockm, dtype=np.uint64).view(np.uint32))
         xmod = mgr.tensor_t(np.array(ls, dtype=word_t).view(np.uint32))
 
         xd, xplus, xminus, xidxp, xidxm = self.tensors
-        defines = self.defines | {"MODULI": MODULI, "BATCH_ROW": BATCH_ROW}
+        defines = self.defines | {"MODULI": MODULI, "BATCH_ROW": BATCH_ROW, "BLOCKM": blockm}
         if INT64:
             defines |= {"INT64": 1}
         kernel = gpu.compile("spmv_multi.comp", defines)
@@ -326,37 +326,19 @@ class SpMV:
                 gpu_ticks += stamps[-1] - stamps[0]
 
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
-        vout = xout.data().view(np.uint64).reshape((ITERS, MODULI))
+        vout = xout.data().view(np.uint64).reshape((ITERS, MODULI, blockm))
 
-        dt = time.monotonic() - t0
         gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
         flops = self.flops * ITERS * MODULI / gpu_dt
         speed = ITERS * MODULI / gpu_dt
 
-        dets = []
-        for i, li in enumerate(ls):
-            if bench:
-                break
-            sequence = [int(x) % li for x in vout[:, i]]
-
-            poly = flint_extras.berlekamp_massey(sequence, li)
-            assert len(poly) == dim + 1, f"l={li} deg={len(poly) - 1}"
-            det = -poly[0] * pow(poly[dim], -1, li) % li
-            dets.append(det)
-            if check:
-                assert linalg.check_wiedemann(sequence, poly, li)
-                assert len(poly) == dim + 1
-                det = -poly[0] * pow(poly[dim], -1, li) % li
-                if i < 5 or i > len(ls) - 5:
-                    logging.info(
-                        f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
-                    )
-
         dt = time.monotonic() - t0
         logging.info(
-            f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
+            f"Krylov completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
-        return dets, ls
+        return {
+            l: [vout[:, lidx, j] for j in range(blockm)] for lidx, l in enumerate(ls)
+        }
 
     def wiedemann_big(self, l: int, check=False):
         "Perform Wiedemann algorithm for a single big modulus"
