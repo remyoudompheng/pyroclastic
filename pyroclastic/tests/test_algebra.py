@@ -1,3 +1,5 @@
+import pickle
+
 from pyroclastic import algebra
 import pyroclastic_flint_extras as flint_extras
 
@@ -10,6 +12,9 @@ def test_binaryqf():
     assert str(q * q**-1) == "qfb(1, 1, 26)"
     assert str(q**0) == "qfb(1, 1, 26)"
     assert str(q**10000000000001) == "qfb(2, 1, 13)"
+
+    assert pickle.loads(pickle.dumps(q)) == q
+    assert pickle.loads(pickle.dumps(q)).q() == q.q()
 
 
 def test_berlekamp_massey_big():

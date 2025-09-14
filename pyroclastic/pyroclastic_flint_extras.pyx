@@ -27,6 +27,7 @@ ctypedef fmpz_struct fmpz_t[1]
 cdef extern from "flint/fmpz.h":
     void fmpz_init(fmpz_t f)
     void fmpz_init_set(fmpz_t f, const fmpz_t g)
+    void fmpz_set(fmpz_t f, const fmpz_t g)
     void fmpz_clear(fmpz_t f)
     char * fmpz_get_str(char * str, int b, const fmpz_t f)
     void fmpz_abs(fmpz_t f1, const fmpz_t f2)
@@ -176,6 +177,14 @@ cdef class fmpz:
 cdef class qfb:
     cdef qfb_t val
 
+    def __init__(self, a, b, c):
+        cdef fmpz az = <fmpz>flint.fmpz(a)
+        cdef fmpz bz = <fmpz>flint.fmpz(b)
+        cdef fmpz cz = <fmpz>flint.fmpz(c)
+        fmpz_set(self.val.a, az.val)
+        fmpz_set(self.val.b, bz.val)
+        fmpz_set(self.val.c, cz.val)
+
     def __cinit__(self):
         qfb_init(self.val)
 
@@ -196,6 +205,9 @@ cdef class qfb:
             return bool(qfb_equal(self.val, (<qfb>other).val))
 
         return False
+
+    def __reduce__(self):
+        return (qfb, self.q())
 
     def q(self):
         cdef char *cstr
@@ -272,7 +284,7 @@ cdef class qfb:
             pz = flint.fmpz(p)
         assert isinstance(Dz, flint.fmpz)
         assert isinstance(pz, flint.fmpz)
-        q = qfb()
+        cdef qfb q = qfb.__new__(qfb)
         if p == 1:
             qfb_principal_form(q.val, (<fmpz>Dz).val)
         else:
