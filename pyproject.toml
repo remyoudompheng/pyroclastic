@@ -20,6 +20,9 @@ dependencies = [
   "networkx>=3.2"
 ]
 
+[project.optional-dependencies]
+dev = ["pytest", "mypy", "types-networkx", "types-tqdm"]
+
 [project.scripts]
 pyroclastic = "pyroclastic:main"
 pyroclastic-sieve = "pyroclastic.sieve:main"
