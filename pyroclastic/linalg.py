@@ -39,6 +39,9 @@ from . import relations
 import pyroclastic_flint_extras as flint_extras
 
 
+DEBUG_NO_SORT_ROWS = False
+
+
 def to_sparse_matrix(rels, square=True):
     """
     Converts a list of relations into a representation suitable
@@ -85,7 +88,8 @@ def to_sparse_matrix(rels, square=True):
                 else:
                     nminus += 1
         sign_rels.append((nplus, nminus, r))
-    sign_rels.sort(key=lambda t: t[:2])
+    if not DEBUG_NO_SORT_ROWS:
+        sign_rels.sort(key=lambda t: t[:2])
     # print([(x, y) for x, y, z in sign_rels])
     rels = [_r for _, _, _r in sign_rels]
 

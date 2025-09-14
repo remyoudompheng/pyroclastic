@@ -121,6 +121,13 @@ def random_matrix_large():
     return MATRIX_LARGE
 
 
+def unsorted_sparse_matrix(rows):
+    linalg.DEBUG_NO_SORT_ROWS = True
+    resp = linalg.to_sparse_matrix(rows)
+    linalg.DEBUG_NO_SORT_ROWS = False
+    return resp
+
+
 def test_spmv():
     rows, basis = init_random_matrix()
     dim = len(rows)
@@ -132,7 +139,7 @@ def test_spmv():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    basis2, dense, plus, minus, weight = unsorted_sparse_matrix(rows)
     assert sorted(basis2) == basis
     v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
 
@@ -155,7 +162,7 @@ def test_spmv_big():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    basis2, dense, plus, minus, weight = unsorted_sparse_matrix(rows)
     assert sorted(basis2) == basis
     v2 = [v[idx1[p]] for p in basis2]
 
@@ -178,7 +185,7 @@ def test_spmv_large():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    basis2, dense, plus, minus, weight = unsorted_sparse_matrix(rows)
     v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
     m2 = linalg_alt.SpMV(dense, plus, minus, basis, weight)
     mv2 = m2.mulvec(v2, 65537)
@@ -199,7 +206,7 @@ def test_blockcoo():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    basis2, dense, plus, minus, weight = unsorted_sparse_matrix(rows)
     assert sorted(basis2) == basis
     v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
 
@@ -220,7 +227,7 @@ def test_csr_matrix():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    basis2, dense, plus, minus, weight = unsorted_sparse_matrix(rows)
     v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
     m4 = linalg.CSRMatrix(dense, plus, minus, basis2, weight)
     mv4 = m4.matmul_small(65537, v2)
@@ -243,7 +250,7 @@ def test_blockcoo3():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    basis2, dense, plus, minus, weight = unsorted_sparse_matrix(rows)
     v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
     m6 = linalg.BlockCOO(dense, plus, minus, basis, weight)
     mv6 = m6.mulvec(v2, 65537)
@@ -262,7 +269,7 @@ def test_blockcoo3_large():
 
     idx1 = {p: i for i, p in enumerate(basis)}
 
-    basis2, dense, plus, minus, weight = linalg.to_sparse_matrix(rows)
+    basis2, dense, plus, minus, weight = unsorted_sparse_matrix(rows)
     v2 = np.array([v[idx1[p]] for p in basis2], dtype=np.int32)
     m2 = linalg.BlockCOO(dense, plus, minus, basis, weight)
     mv2 = m2.mulvec(v2, 65537)
