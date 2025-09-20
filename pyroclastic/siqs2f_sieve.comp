@@ -35,7 +35,7 @@ layout(binding = 4) writeonly buffer Debug { uint debugbuf[]; };
 #endif
 
 #include <arith.comp>
-#include <siqs_common.h>
+#include <siqs_common.comp>
 
 #if AFACS < 17
 #error AFACS < 17

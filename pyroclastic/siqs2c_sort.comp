@@ -27,7 +27,7 @@ layout(binding = 4) writeonly buffer RIdx { uint rindex[]; };
 #endif
 
 #include <arith.comp>
-#include <siqs_common.h>
+#include <siqs_common.comp>
 
 #if AFACS < 17
 #error AFACS < 17
