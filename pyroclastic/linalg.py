@@ -61,6 +61,8 @@ def to_sparse_matrix(rels, square=True):
         if count > len(rels) // 3:
             dense_counts.append((count, p))
     dense_counts.sort()
+    if len(dense_counts) > 64:
+        dense_counts = dense_counts[-64:]
     dense_p = sorted([p for _, p in dense_counts[len(dense_counts) % 4 :]])
     assert len(dense_p) % 4 == 0
 
