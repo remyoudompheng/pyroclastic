@@ -31,6 +31,7 @@ import time
 
 import kp
 import numpy as np
+import numpy.typing as npt
 
 from . import algebra
 from . import gpu
@@ -609,7 +610,7 @@ def to_uvec(x: int, length: int):
     return [(x >> (32 * i)) & 0xFFFFFFFF for i in range(length)]
 
 
-def from_uvec(words: list) -> int:
+def from_uvec(words: list[int] | npt.NDArray) -> int:
     return sum(int(x) << (32 * i) for i, x in enumerate(words))
 
 

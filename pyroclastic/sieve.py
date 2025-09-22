@@ -25,8 +25,6 @@ where A has size sqrt(2N) / 2M
 Polynomial extrema are P(0)=sqrt(N)*M/2, P(±M)=sqrt(N)*M
 """
 
-from typing import Tuple, Optional
-
 import argparse
 import itertools
 import json
@@ -39,8 +37,10 @@ import time
 from multiprocessing import Pool, Semaphore, current_process
 
 import numpy as np
+import numpy.typing as npt
 import kp
 import flint
+
 try:
     import pymqs
 except ImportError:
@@ -57,15 +57,15 @@ SHARDS = 256
 DEBUG_TIMINGS = False
 
 
-def smoothness_bias(D: int):
+def smoothness_bias(D: int) -> float:
     """
     The average amount of extra bits in the smooth part
     """
     match D % 8:
         case 1:
-            b = 1
+            b = 1.0
         case 5:
-            b = 0
+            b = 0.0
         case 0:
             b = -0.5
         case 4:
@@ -83,7 +83,7 @@ def smoothness_bias(D: int):
     return b
 
 
-def product(l: list[int]):
+def product(l: list[int] | tuple[int]):
     p = l[0]
     for x in l[1:]:
         p *= x
@@ -91,7 +91,7 @@ def product(l: list[int]):
 
 
 def make_a(
-    pbase, target: int, AFACS: int, seen: Optional[set[tuple]] = None
+    pbase, target: int, AFACS: int, seen: set[tuple] | None = None
 ) -> list[tuple[int]]:
     """
     Returns products of elements of pbase approximating target
@@ -133,7 +133,7 @@ def make_a(
     return [_ps for _, _ps in res]
 
 
-def make_poly(N: int, ak: list, roots: dict) -> Tuple[int, list]:
+def make_poly(N: int, ak: list, roots: dict) -> tuple[int, list]:
     """
     Return A, [Bi] defining 2^len(Bi) polynomials
 
@@ -180,7 +180,9 @@ def expand_one_poly(N: int, A: int, Bi: list[int], idx: int):
     return A, B, C
 
 
-def build_relation(value, idx, facs, B1=None, B2=None):
+def build_relation(
+    value: int, idx: int, facs: list[int], B1=None, B2=None
+) -> list[int] | None:
     row = []
     v = value
     assert v > 0
@@ -320,11 +322,12 @@ PARAMS_SIEVE2 = (
 )
 
 
-def get_params(N: int, bias: float = None):
-    sz = N.bit_length()
+def get_params(N: int, bias: float | None = None) -> tuple:
+    sz: float = N.bit_length()
     if bias:
         sz -= 2.5 * bias
     res = None
+    PARAMS: tuple
     if sz < 200:
         PARAMS = PARAMS1
     else:
@@ -332,17 +335,19 @@ def get_params(N: int, bias: float = None):
     for p in PARAMS:
         if p[0] <= sz:
             res = p
+    assert res is not None
     return res[1:]
 
 
-def get_params2(N: int, bias: float = None):
-    sz = N.bit_length()
+def get_params2(N: int, bias: float | None = None) -> tuple:
+    sz: float = N.bit_length()
     if bias:
         sz -= 2.5 * bias
     res = None
     for p in PARAMS_SIEVE2:
         if p[0] <= sz:
             res = p
+    assert res is not None
     return res[1:]
 
 
@@ -750,7 +755,9 @@ class Siever2:
         )
         return dt, nreports, rows
 
-    def _process_sieve_reports(self, ABi, vout, N, B1, B2, OUTSTRIDE):
+    def _process_sieve_reports(
+        self, ABi: tuple, vout: npt.NDArray, N: int, B1: int, B2: int, OUTSTRIDE: int
+    ):
         INTERVAL = self.wargs["INTERVAL_SIZE"]
         results = []
         A, ak, Bi = ABi
@@ -926,7 +933,7 @@ def main_impl(args: argparse.Namespace):
     logging.debug(f"{AFACS} factors per A, {BLEN} words per coefficient")
 
     results = []
-    all_primes = set()
+    all_primes: set[int] = set()
 
     os.makedirs(args.OUTDIR, exist_ok=True)
     with open(os.path.join(args.OUTDIR, "args.json"), "w") as w:
@@ -974,7 +981,7 @@ def main_impl(args: argparse.Namespace):
         TARGET_GAP = 64
     else:
         TARGET_GAP = 4 * len(primes)
-    Aseen = set()
+    Aseen: set[tuple[int]] = set()
     while not done:
         As = make_a(primes, A0, AFACS, Aseen)
         Aseen.update(As)
