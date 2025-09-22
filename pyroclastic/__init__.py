@@ -11,8 +11,20 @@ from . import groupstruct
 def main():
     argp = argparse.ArgumentParser()
     argp.add_argument("-v", "--verbose", action="store_true")
-    argp.add_argument("--check", action="store_true", help="Verify relations")
-    argp.add_argument("--siever2", action="store_true", help="Use Siever2")
+
+    sieve_args = argp.add_argument_group("Sieve options")
+    sieve_args.add_argument("--check", action="store_true", help="Verify relations")
+    sieve_args.add_argument("--siever2", action="store_true", help="Use Siever2")
+
+    linalg_args = argp.add_argument_group("Linear algebra options")
+    linalg_args.add_argument("--deterministic", action="store_true")
+    linalg_args.add_argument(
+        "--ncpu",
+        type=int,
+        default=None,
+        help="Number of CPU threads for (block) Wiedemann",
+    )
+
     argp.add_argument(
         "-j",
         metavar="THREADS",
