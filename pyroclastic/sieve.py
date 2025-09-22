@@ -197,11 +197,13 @@ def build_relation(
     if v == 1:
         return row
     if pymqs is not None:
-        cofacs = [(_l, 1) for _l in pymqs.factor(v)]
+        cofacs = [
+            (_l, 1) for _l in pymqs.factor_smooth(v, B2.bit_length() if B2 else 20)
+        ]
     else:
         cofacs = flint.fmpz(v).factor_smooth(bits=B2.bit_length() if B2 else 20)
     for _p, _e in cofacs:
-        if not flint.fmpz(_p).is_prime():
+        if not flint.fmpz(_p).is_probable_prime():
             return None
         # logging.error(f"WARNING: uncaught small prime {_p}")
         row.extend(_e * [_p])
