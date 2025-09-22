@@ -303,8 +303,7 @@ class CSRMatrix:
         )
 
         return {
-            l: [vout[:, lidx, j] for j in range(blockm)]
-            for lidx, l in enumerate(ls)
+            l: [vout[:, lidx, j] for j in range(blockm)] for lidx, l in enumerate(ls)
         }
 
     def matmul_small(self, l: int, v):
@@ -814,12 +813,15 @@ def detz(subrels, threads, cputhreads: int | None, logfile=None):
             ):
                 jobs = []
                 for l, seqs in krys.items():
-                    ljob = lingen_pool.submit(lingen.generating_polynomial_multi,
-                                       [list(map(int, s)) for s in seqs],
-                                       dim, l)
+                    ljob = lingen_pool.submit(
+                        lingen.generating_polynomial_multi,
+                        [list(map(int, s)) for s in seqs],
+                        dim,
+                        l,
+                    )
                     jobs.append((l, ljob))
 
-                dets, mods = [] ,[]
+                dets, mods = [], []
                 for l, ljob in jobs:
                     pol = ljob.result()
                     if len(pol) != dim + 1:
@@ -1012,6 +1014,7 @@ def bench(rels, check=False):
     ][:3] + moduli[3:]
 
     BLOCKM = 1
+
     def wiedemann_multi(M, *args, **kwargs):
         nonlocal CHECK
         kwargs = kwargs | {"blockm": BLOCKM}
@@ -1023,7 +1026,9 @@ def bench(rels, check=False):
                 if lidx < 5 or lidx > len(ls) - 5:
                     pol = lingen.generating_polynomial_multi(seqs, M.dim, l)
                     det = -pol[0] if M.dim & 1 == 1 else pol[0]
-                    logging.info(f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det % l}")
+                    logging.info(
+                        f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det % l}"
+                    )
 
     Mat = SpMV(dense, plus, minus, basis, weight)
     logging.info("Running with 1 modulus (naive kernel)")

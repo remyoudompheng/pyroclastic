@@ -13,6 +13,7 @@ from . import linalg
 from . import linalg_alt
 from . import relations
 
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("-v", "--verbose", action="store_true")
@@ -62,7 +63,7 @@ def main_impl(args):
         primes.update(r)
     basis = sorted(primes)
     proj = [random.getrandbits(100) for b in basis]
-    proj_d = {p:x for p, x in zip(basis, proj)}
+    proj_d = {p: x for p, x in zip(basis, proj)}
 
     def fproj(r: dict) -> int:
         return sum(e * proj_d[l] for l, e in r.items())
@@ -105,7 +106,7 @@ def main_impl(args):
                     for b in (-1, 1):
                         if 0 in (a, b):
                             continue
-                        pab = a*pry + b*prz
+                        pab = a * pry + b * prz
                         if pab in sums:
                             print(f"{a}*[{ry}] + {b}*[{rz}] = {sums[pab]} !!!")
                             logging.info("DUPLICATE")
@@ -122,7 +123,9 @@ def main_impl(args):
                             print("x", showrel(rels[rx]))
                             print("y", showrel(rels[ry]))
                             print("z", showrel(rels[rz]))
-                            print(f"{a} * y@rels[{ry}] + {b} * z@rels[{rz}] =? ±x@rels[{rx}]")
+                            print(
+                                f"{a} * y@rels[{ry}] + {b} * z@rels[{rz}] =? ±x@rels[{rx}]"
+                            )
                             logging.info("DUPLICATE")
                             rels[rx] = None
                             logging.info(f"Removed rels[{rx}]")
@@ -155,7 +158,9 @@ def main_impl(args):
                             print("x", showrel(rels[ri]))
                             print("y", showrel(rels[rj]))
                             print("z", showrel(rels[rk]))
-                            logging.info("{ej} * [{ri}] + {-ei} * [{rj}] ?= {k} * [{rk}]")
+                            logging.info(
+                                "{ej} * [{ri}] + {-ei} * [{rj}] ?= {k} * [{rk}]"
+                            )
                             rels[rk] = None
                             logging.info(f"Removed rels[{rk}]")
 
@@ -187,8 +192,10 @@ def main_impl(args):
     M = linalg_alt.SpMV(dense, plus, minus, basis, weight)
     print(M.wiedemann_multi(moduli, check=True))
 
+
 def showrel(rel: dict) -> str:
     return " ".join(f"{p}^{e}" for p, e in sorted(rel.items()))
+
 
 if __name__ == "__main__":
     main()

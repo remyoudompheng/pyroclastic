@@ -67,7 +67,7 @@ def factor_q(D: int, q) -> list[tuple[int, int]]:
         qf = qf * flint_extras.qfb.prime_form(D, l) ** e
         Qf.append((int(l), int(e)))
     # input form is possibly not reduced.
-    #assert qf.q() == (A, B, C)
+    # assert qf.q() == (A, B, C)
     return Qf
 
 
@@ -273,9 +273,7 @@ def gpu_sieve(D, p, dlogs: dict[int, any] | None = None):
         best_rel = None
         for x in candidates:
             # qp ~= (q(x), -q'(x), A)
-            rel = factor_q(
-                D, (qA * x**2 + qB * x + qC, -2 * qA * x - qB, qA)
-            )
+            rel = factor_q(D, (qA * x**2 + qB * x + qC, -2 * qA * x - qB, qA))
             assert product_q(D, rel) == qp
 
             # We want the largest factor to be smaller than D^1/4
@@ -287,7 +285,10 @@ def gpu_sieve(D, p, dlogs: dict[int, any] | None = None):
             is_better = (
                 best_large is None
                 or len(larges) < len(best_large)
-                or (len(larges) == len(best_large) and tuple(reversed(larges)) < best_large)
+                or (
+                    len(larges) == len(best_large)
+                    and tuple(reversed(larges)) < best_large
+                )
             )
             if is_better:
                 best_large = tuple(reversed(larges))

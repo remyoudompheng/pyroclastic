@@ -274,11 +274,17 @@ class SpMV:
                 sel[i] = random.randrange(BATCH_ROW)
         xsel = mgr.tensor_t(sel.view(np.uint32))
         # Output sequence out[k] = S M^k V
-        xout = mgr.tensor_t(np.zeros(MODULI * ITERS * blockm, dtype=np.uint64).view(np.uint32))
+        xout = mgr.tensor_t(
+            np.zeros(MODULI * ITERS * blockm, dtype=np.uint64).view(np.uint32)
+        )
         xmod = mgr.tensor_t(np.array(ls, dtype=word_t).view(np.uint32))
 
         xd, xplus, xminus, xidxp, xidxm = self.tensors
-        defines = self.defines | {"MODULI": MODULI, "BATCH_ROW": BATCH_ROW, "BLOCKM": blockm}
+        defines = self.defines | {
+            "MODULI": MODULI,
+            "BATCH_ROW": BATCH_ROW,
+            "BLOCKM": blockm,
+        }
         if INT64:
             defines |= {"INT64": 1}
         kernel = gpu.compile("spmv_multi.comp", defines)

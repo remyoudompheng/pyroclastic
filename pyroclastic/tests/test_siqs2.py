@@ -326,11 +326,7 @@ def main():
     xout = siever.shader6.get_tensors()[-2]
     xdebug = siever.shader6.get_tensors()[-1]
     vout = xout.data().astype(np.int32)
-    vdebug = (
-        xdebug.data()
-        .view(np.uint8)
-        .reshape((WORKCHUNK, INTERVAL_SIZE))
-    )
+    vdebug = xdebug.data().view(np.uint8).reshape((WORKCHUNK, INTERVAL_SIZE))
     siever.mgr.sequence().record(kp.OpTensorSyncLocal([xdebug])).eval()
     total_expected = 0
     total_observed = 0
@@ -348,8 +344,8 @@ def main():
         if expected:
             print("Expect", expected)
         sieve_result = vdebug[_i, :].astype(np.uint32)
-        #print(sieve_result)
-        #print(np.sum(sieve_result))
+        # print(sieve_result)
+        # print(np.sum(sieve_result))
         seen = set()
         for oidx in range(vout[0]):
             x = vout[oidx]
