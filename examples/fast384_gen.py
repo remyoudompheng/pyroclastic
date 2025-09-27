@@ -5,7 +5,7 @@ Generate examples for fast384
 import bisect
 import math
 import random
-from multiprocessing import Pool
+from multiprocessing import Pool, Value
 
 import numpy as np
 import flint
@@ -13,8 +13,10 @@ from pyroclastic import algebra
 
 
 primes = {}
+logprimes = {}
 
-BIAS0 = 1 + sum(math.log2(p) / float(p) for p in algebra.smallprimes(380) if p > 2)
+MAXSMALL = 284
+BIAS0 = 1 + sum(math.log2(p) / float(p) for p in algebra.smallprimes(MAXSMALL) if p > 2)
 
 
 def smoothness_bias(D: int, bound: int):
@@ -24,16 +26,23 @@ def smoothness_bias(D: int, bound: int):
     assert D % 4 == 1
     DD = flint.fmpz(D)
     if bound not in primes:
-        # Skip all primes < 380
-        primes[bound] = [l for l in algebra.smallprimes(bound) if l > 380]
+        # Skip all primes < MAXSMALL
+        primes[bound] = [l for l in algebra.smallprimes(bound) if l > MAXSMALL]
+        logprimes[bound] = [math.log2(p) / float(p) for p in primes[bound]]
     b = BIAS0
     if D % 8 != 1:
         b -= 1
-    for p in primes[bound]:
+    for p, lp in zip(primes[bound], logprimes[bound]):
         if p < 3:
             continue
         legendre = DD.jacobi(p)
-        b += float(legendre) * math.log2(p) / float(p)
+        if legendre == 0:
+            # not a prime
+            return None
+        if legendre == 1:
+            b += lp
+        elif legendre == -1:
+            b -= lp
     return b
 
 
@@ -136,12 +145,11 @@ set2.sort()
 
 print("Working on", len(set2), "samples")
 
-best = 7.5
+best = Value("d", 7.5)
 
 
 def sample3(_):
     # Now randomly sample squares modulo P3
-    global best
     for _ in range(SAMPLES):
         x3 = sum(random.choice(r3) * c3 for r3, c3 in zip(res3, crt3))
         x3 = (C3 * x3) % P23
@@ -151,32 +159,38 @@ def sample3(_):
         t2 = (TARGET_MAX - x3) % P23
         tidx1 = bisect.bisect(set2, t1)
         tidx2 = bisect.bisect(set2, t2, lo=tidx1, hi=min(len(set2), tidx1 + 100))
+        cur_best = best.value
         for y2 in set2[tidx1:tidx2]:
             xy = x3 + y2
             if xy > P23:
                 xy -= P23
             p = P1 * xy - 1
             # assert all(flint.fmpz(-p).jacobi(l) == 1 for l in ps1+ps2+ps3)
-            score0 = smoothness_bias(-p, 1000)
-            if score0 < best - 0.5:
+            score0 = smoothness_bias(-p, 500)
+            if score0 is None:
+                continue
+            if score0 < cur_best - 0.6:
                 continue
 
             score1 = smoothness_bias(-p, 10000)
-            # assert score1 < score0 + 0.5
+            if score1 is None:
+                continue
+            # assert score1 < score0 + 0.6
 
-            if score1 > best - 0.1:
+            if score1 > cur_best - 0.1:
                 if not flint.fmpz(p).is_probable_prime():
                     continue
 
                 score = smoothness_bias(-p, 100000)
                 # Score cannot improve much
                 # assert score - score1 < 0.1
-                if score > best - 0.05:
-                    best = max(best, score)
+                if score > cur_best - 0.05:
+                    with best.get_lock():
+                        best.value = max(best.value, score)
                     scoreh = classgroup_bias(-p, 100000)
                     print(f"p=0x{p:x} alpha={score:.3f} h/sqrt(D)={scoreh:.3f}")
 
 
-with Pool(8) as pool:
+with Pool() as pool:
     for _ in pool.map(sample3, list(range(800))):
         pass
