@@ -9,6 +9,40 @@ def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None 
     """
     Variant with both singleton and clique removal.
     """
+
+    # To save memory, perform a singleton pruning pass before creating
+    # large data structures
+    excess = -1
+    # nrels_orig = len(rawrels)
+    while excess < 0:
+        pseen = set()
+        pseen2 = set()
+        for rel in rawrels:
+            for p in rel:
+                p = abs(p)
+                if p in pseen:
+                    pseen2.add(p)
+                pseen.add(p)
+        logging.info(f"[prune] {len(pseen)} primes appear in {len(rawrels)} relations")
+        excess = len(rawrels) - len(pseen)
+        pseen.difference_update(pseen2)
+        del pseen2
+
+        rawrels_ = []
+        for rel in rawrels:
+            if any(abs(p) in pseen for p in rel):
+                continue
+            rawrels_.append(rel)
+        logging.info(
+            f"[prune] pruned {len(rawrels) - len(rawrels_)} relations with singletons"
+        )
+        stop = len(rawrels_) > 0.6 * len(rawrels)
+        rawrels = rawrels_
+        del pseen, rawrels_
+        if stop:
+            break
+
+    # Now perform pruning
     rels = []
     for rel in rawrels:
         exps = {}
@@ -256,11 +290,15 @@ def step_filter(rels, datadir: pathlib.Path | None):
 
         remaining = [_r for _r in rels if _r is not None]
         nr, nc = len(remaining), len(stats)
-        avgw = sum(len(r) for r in remaining) / nr
+
+        sparse_thr = max(2 * d, nr // 10)
 
         def score_sparse(rel, stats):
-            t = max(2 * d, nr // 10)
-            return sum(1 for l in rel if len(stats[l]) < t)
+            nonlocal sparse_thr
+            return sum(1 for l in rel if len(stats[l]) < sparse_thr)
+
+        sparsew = [score_sparse(r, stats) if r is not None else 0 for r in rels]
+        avgw = sum(sparsew) / nr
 
         stop = avgw > dense_limit
         # Remove most annoying relations
@@ -273,11 +311,9 @@ def step_filter(rels, datadir: pathlib.Path | None):
                 # Still actively merging
                 to_remove = 0
             if to_remove:
-                scores = []
-                for ridx, r in enumerate(rels):
-                    if r is None:
-                        continue
-                    scores.append((score_sparse(r, stats), ridx))
+                scores = [
+                    (_w, _i) for _i, _w in enumerate(sparsew) if rels[_i] is not None
+                ]
                 scores.sort()
                 worst = scores[-to_remove:]
                 print(
@@ -373,4 +409,5 @@ def main():
             rels.append([int(x) for x in l.split()])
         logging.info(f"Imported {len(rels)} relations")
         pruned, _ = step_prune(rels, 0, 0, pathlib.Path(args.DATADIR))
+        del rels
         step_filter(pruned, pathlib.Path(args.DATADIR))
