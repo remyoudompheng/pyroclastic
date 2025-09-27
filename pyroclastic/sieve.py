@@ -35,6 +35,7 @@ import pathlib
 import random
 import time
 from multiprocessing import Pool, Semaphore, current_process
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import numpy.typing as npt
@@ -739,6 +740,7 @@ class Siever2:
             SHADER6,
             workgroup=(BUCKETS, 1, 1),
         )
+        self.factorpool = ThreadPoolExecutor()
 
     def process(self, ak):
         BLEN = self.wargs["BLEN"]
@@ -766,6 +768,7 @@ class Siever2:
         nout = int(vout[0])
         if nout >= len(vout):
             logging.error(f"output buffer too small {nout}/{len(vout)}")
+        futures = []
         for oidx in range(min(len(vout) - 1, nout)):
             v = int(vout[oidx + 1])
             poly_idx = v // INTERVAL
@@ -778,7 +781,11 @@ class Siever2:
             u = 2 * _A * x + _B
             assert u * u == 4 * A * v + N
             # In the class group: (A, B, C) * (v, u, A) == 1
-            row = build_relation(v, x, [], B1=B1, B2=B2)
+            row_async = self.factorpool.submit(build_relation, v, x, [], B1=B1, B2=B2)
+            futures.append((_B, u, v, row_async))
+        del u, v, x, _A, _B, _C, poly_idx
+        for B, u, v, row_async in futures:
+            row = row_async.result()
             # print(poly_idx, x, v, row)
             if row is None or any(_r > B2 for _r in row):
                 # factors too large
@@ -798,7 +805,7 @@ class Siever2:
                         row[i] = -p
             # Add factors of A
             for ai in ak:
-                bp = _B % ai
+                bp = B % ai
                 if bp & 1 == 0:
                     row.append(-ai)
                 else:
