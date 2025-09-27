@@ -96,6 +96,8 @@ void main() {
                       (poly_idx / BUCKETS_PER_SHARD) * (8 * INTERVAL);
       buckbuf[l][bidx] = uint16_t(s2);
     }
+    // FIXME: this branch is incompatible with NVIDIA driver
+    // if (true) {
     if (i % 4 == 3) {
       barrier();
       memoryBarrierShared();

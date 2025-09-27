@@ -770,6 +770,9 @@ class Siever2:
             v = int(vout[oidx + 1])
             poly_idx = v // INTERVAL
             x = v % INTERVAL - INTERVAL // 2
+            # FIXME: RADV driver for AMD seems to create false positives?
+            # if x == 0:
+            #     continue
             _A, _B, _C = expand_one_poly(N, A, Bi, poly_idx)
             v = _A * x * x + _B * x + _C
             u = 2 * _A * x + _B
