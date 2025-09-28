@@ -864,6 +864,9 @@ def main():
         default=None,
         help="Number of CPU threads for (block) Wiedemann",
     )
+    p.add_argument(
+        "--blockm", type=int, default=2, help="Block size for Block Wiedemann"
+    )
     p.add_argument("--bench", action="store_true")
     p.add_argument("--checkbench", action="store_true")
     p.add_argument("--deterministic", action="store_true")
@@ -880,6 +883,10 @@ def main():
 def main_impl(args):
     if args.deterministic:
         random.seed(1)
+
+    # FIXME: ugly
+    global BLOCKM
+    BLOCKM = args.blockm
 
     while len(GPU_LOCK) < args.ngpu:
         GPU_LOCK.append(Semaphore(2))

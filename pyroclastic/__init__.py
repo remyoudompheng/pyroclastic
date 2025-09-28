@@ -24,6 +24,9 @@ def main():
         default=None,
         help="Number of CPU threads for (block) Wiedemann",
     )
+    linalg_args.add_argument(
+        "--blockm", type=int, default=2, help="Block size for Block Wiedemann"
+    )
 
     argp.add_argument(
         "-j",
