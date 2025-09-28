@@ -24,7 +24,7 @@ dependencies = [
 dev = ["pytest", "mypy", "types-networkx", "types-tqdm"]
 
 [project.scripts]
-pyroclastic = "pyroclastic:main"
+pyroclastic = "pyroclastic.__main__:main"
 pyroclastic-sieve = "pyroclastic.sieve:main"
 pyroclastic-sievechk = "pyroclastic.sieve:check"
 pyroclastic-relations = "pyroclastic.relations:main"
