@@ -432,6 +432,7 @@ class SpMV:
 
         # FIXME: use actual norm
         BLEN = (l.bit_length() + 8 + 31) // 32
+        BLEN = max(2, BLEN)
         maxout = l * l * len(poly)
         ALEN = (maxout.bit_length() + 4 + 31) // 32
         pwords = to_uvec(l, BLEN)
