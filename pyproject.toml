@@ -31,6 +31,7 @@ pyroclastic-relations = "pyroclastic.relations:main"
 pyroclastic-linalg = "pyroclastic.linalg:main"
 pyroclastic-groupstruct = "pyroclastic.groupstruct:main"
 pyroclastic-smoothrel = "pyroclastic.smoothrel:main"
+pyroclastic-factor = "pyroclastic.factor.__main__:main"
 
 [tool.setuptools]
 ext-modules = [{name = "pyroclastic_flint_extras", sources = ["pyroclastic/pyroclastic_flint_extras.pyx"], libraries = ["flint"]}]

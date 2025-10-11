@@ -85,37 +85,38 @@ def main_impl(args):
     pruned = relations.prune_gf2(N, rels, pathlib.Path(args.DATADIR))
     filtered = relations.filter_gf2(N, pruned, pathlib.Path(args.DATADIR))
 
-    M = SpMV([facs for _, facs in filtered])
     factors = [N]
-    kers = M.left_kernel()
-    logger.info(f"Found {len(kers)} distinct nonzero left kernel elements")
-    for k in kers:
-        # Build relation x²=y²
-        prodx = 1
-        prodrel = {}
-        for i in range(M.dim):
-            if k[i]:
-                rx, rfacs = filtered[M.rowidx[i]]
-                prodx = prodx * rx % N
-                for l in map(int, rfacs):
-                    prodrel[l] = prodrel.get(l, 0) + 1
+    while any(not flint.fmpz(f).is_probable_prime() for f in factors):
+        M = SpMV([facs for _, facs in filtered])
+        kers = M.left_kernel()
+        logger.info(f"Found {len(kers)} distinct nonzero left kernel elements")
+        for k in kers:
+            # Build relation x²=y²
+            prodx = 1
+            prodrel = {}
+            for i in range(M.dim):
+                if k[i]:
+                    rx, rfacs = filtered[M.rowidx[i]]
+                    prodx = prodx * rx % N
+                    for l in map(int, rfacs):
+                        prodrel[l] = prodrel.get(l, 0) + 1
 
-        prody = 1
-        for l, e in prodrel.items():
-            assert e & 1 == 0
-            prody = prody * pow(l, e // 2, N) % N
-        assert (prodx**2 - prody**2) % N == 0
+            prody = 1
+            for l, e in prodrel.items():
+                assert e & 1 == 0
+                prody = prody * pow(l, e // 2, N) % N
+            assert (prodx**2 - prody**2) % N == 0
 
-        # Update factors
-        fs = []
-        for f in factors:
-            f1 = math.gcd(f, prodx - prody)
-            if 1 < f1 < f:
-                fs.extend([f1, f // f1])
-            else:
-                fs.append(f)
-        fs.sort()
-        factors = fs
+            # Update factors
+            fs = []
+            for f in factors:
+                f1 = math.gcd(f, prodx - prody)
+                if 1 < f1 < f:
+                    fs.extend([f1, f // f1])
+                else:
+                    fs.append(f)
+            fs.sort()
+            factors = fs
 
     for f in factors:
         if not flint.fmpz(f).is_probable_prime():
