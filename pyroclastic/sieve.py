@@ -186,6 +186,9 @@ def build_relation(
 ) -> list[int] | None:
     row = []
     v = value
+    if v < 0:
+        row.append(-1)
+        v = -v
     assert v > 0
     # We maybe don't sieve 2
     tz = (v ^ (v - 1)).bit_length() - 1
@@ -209,60 +212,6 @@ def build_relation(
         # logging.error(f"WARNING: uncaught small prime {_p}")
         row.extend(_e * [_p])
     return row
-
-
-def process_sieve_reports(ABi, bout, bfacs, N, B1, B2, OUTSTRIDE):
-    if isinstance(bout, bytes):
-        vout = np.frombuffer(bout, dtype=np.int32)
-        vfacs = np.frombuffer(bfacs, dtype=np.uint32)
-    else:
-        vout, vfacs = bout, bfacs
-
-    reports = 0
-    results = []
-    A, ak, Bi = ABi
-    for _i in range(1 << (len(Bi) - 1)):
-        poly = None
-        for _j in range(OUTSTRIDE):
-            oidx = OUTSTRIDE * _i + _j
-            if not vout[oidx] and not vfacs[32 * oidx]:
-                break
-            if poly is None:
-                poly = expand_one_poly(N, A, Bi, _i)
-            _A, _B, _C = poly
-            reports += 1
-            x = int(vout[oidx])
-            _facs = [int(_f) for _f in vfacs[32 * oidx : 32 * oidx + 32] if _f]
-            v = _A * x * x + _B * x + _C
-            u = 2 * _A * x + _B
-            assert u * u == 4 * A * v + N
-            # In the class group: (A, B, C) * (v, u, A) == 1
-            row = build_relation(v, x, _facs, B1=B1, B2=B2)
-            if row is None or any(_r > B2 for _r in row):
-                # factors too large
-                continue
-            assert product(row) == v
-            # Add correct signs to ideals
-            for i, p in enumerate(row):
-                up = u % p
-                if p == 2:
-                    # -[2] if the root is 3 mod 4
-                    if u & 3 == 3:
-                        row[i] = -p
-                else:
-                    # -[p] if the root is even
-                    if up & 1 == 0:
-                        # Even root
-                        row[i] = -p
-            # Add factors of A
-            for ai in ak:
-                bp = _B % ai
-                if bp & 1 == 0:
-                    row.append(-ai)
-                else:
-                    row.append(ai)
-            results.append(row)
-    return reports, results
 
 
 def to_uvec(x: int, length: int):
@@ -522,10 +471,57 @@ class Siever:
         _, _, xout, xfacs = self.tensors
         vout = xout.data()
         vfacs = xfacs.data()
-        nreports, rows = process_sieve_reports(
+        nreports, rows = self.process_sieve_reports(
             (A, ak, Bi), vout.astype(np.int32), vfacs, D, B1, B2, OUTSTRIDE
         )
         return dt, nreports, rows
+
+    def process_sieve_reports(self, ABi, vout, vfacs, N, B1, B2, OUTSTRIDE):
+        reports = 0
+        results = []
+        A, ak, Bi = ABi
+        for _i in range(1 << (len(Bi) - 1)):
+            poly = None
+            for _j in range(OUTSTRIDE):
+                oidx = OUTSTRIDE * _i + _j
+                if not vout[oidx] and not vfacs[32 * oidx]:
+                    break
+                if poly is None:
+                    poly = expand_one_poly(N, A, Bi, _i)
+                _A, _B, _C = poly
+                reports += 1
+                x = int(vout[oidx])
+                _facs = [int(_f) for _f in vfacs[32 * oidx : 32 * oidx + 32] if _f]
+                v = _A * x * x + _B * x + _C
+                u = 2 * _A * x + _B
+                assert u * u == 4 * A * v + N
+                # In the class group: (A, B, C) * (v, u, A) == 1
+                row = build_relation(v, x, _facs, B1=B1, B2=B2)
+                if row is None or any(_r > B2 for _r in row):
+                    # factors too large
+                    continue
+                assert product(row) == v
+                # Add correct signs to ideals
+                for i, p in enumerate(row):
+                    up = u % p
+                    if p == 2:
+                        # -[2] if the root is 3 mod 4
+                        if u & 3 == 3:
+                            row[i] = -p
+                    else:
+                        # -[p] if the root is even
+                        if up & 1 == 0:
+                            # Even root
+                            row[i] = -p
+                # Add factors of A
+                for ai in ak:
+                    bp = _B % ai
+                    if bp & 1 == 0:
+                        row.append(-ai)
+                    else:
+                        row.append(ai)
+                results.append(row)
+        return reports, results
 
     def _run(self, ak, A, Bi):
         AFACS = self.wargs["AFACS"]

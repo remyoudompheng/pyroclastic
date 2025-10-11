@@ -1,0 +1,95 @@
+// Sparse matrix-vector transposed multiplication over GF(2)
+//
+// This shader implements the naïve multiplication V*M
+// where M is in the same dense + CSR rows format as in spmv_gf2
+//
+// It is simple but suboptimal because each matrix coefficient
+// triggers a global atomic operation.
+//
+// The shader is only used in POLYEVAL mode:
+// a matrix polynomial ak X^k is given, and the computation
+// is:
+//   Sum(ak * V * Mat^k)
+
+#version 450
+
+#ifndef N
+#error Matrix dimension undefined
+#endif
+
+#ifndef DENSE_N
+#error Dense width undefined
+#endif
+
+#ifndef K
+#error Block size undefined
+#endif
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+// Each thread handles a row.
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Dense { uint8_t[DENSE_N] dense[]; };
+layout(binding = 1) readonly buffer Sparse { uint16_t sparse[]; };
+layout(binding = 2) readonly buffer Idx { uint sidx[]; };
+// Vector of size 2N:
+// even iterations do V[N:2N] = M * V[0:N]
+// odd iterations do V[0:N] = M * V[N:2N]
+layout(binding = 3) buffer V { uint[K] v[]; };
+// Vector of identical values (1 per workgroup) indicating iteration count
+layout(binding = 4) buffer Iter { uint iter[]; };
+// Polynomial sum(ak X^k)
+layout(binding = 5) readonly buffer Poly { uint[M][K] ak[]; };
+// Output sum(M^k V ak)
+layout(binding = 6) coherent buffer Wout { uint[K] wout[]; };
+
+void main() {
+  uint idx = iter[gl_WorkGroupID.x];
+  uint off0 = ((idx & 1) == 0) ? 0 : N;
+  uint off1 = ((idx & 1) == 0) ? N : 0;
+  uint row = gl_GlobalInvocationID.x;
+  if (row >= N)
+    return;
+
+  // Initial condition: v[off1 + *] == 0
+  uint[K] vi = v[off0 + row];
+  // Clear v0 for next iteration
+  for (uint k = 0; k < K; k++)
+	  v[off0 + row][0] = 0;
+  // wout[row] += ak[idx] * vi
+  uint[K] w = wout[row];
+  for (uint b = 0; b < M; b++) {
+    // bit b is the dot product ak[b] * acc
+    uint wi = 0;
+    for (uint k = 0; k < K; k++)
+      wi ^= bitCount(ak[idx][b][k] & vi[k]) & 1;
+    w[b / 32] ^= (wi << (b % 32));
+  }
+  wout[row] = w;
+
+  // Now accumulate out[j] += vi * mij
+  // Dense block
+  for (uint i = 0; i < DENSE_N; i++) {
+    if (dense[row][i] == 1) {
+      for (uint k = 0; k < K; k++)
+        atomicXor(v[off1 + i][k], vi[k]);
+    }
+  }
+  // Sparse coefficients
+  uint i0 = sidx[row];
+  uint i1 = sidx[row + 1];
+  uint base = 0;
+  for (uint i = i0; i < i1; i++) {
+    uint c = sparse[i];
+    if (N >= 0xffff && c == 0xffff) {
+      base += 0xffff;
+      continue;
+    }
+    for (uint k = 0; k < K; k++)
+      atomicXor(v[off1 + base + c][k], vi[k]);
+  }
+  barrier();
+  if (gl_LocalInvocationID.x == 0)
+    iter[gl_WorkGroupID.x] = idx + 1;
+}

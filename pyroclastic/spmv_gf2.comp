@@ -1,0 +1,106 @@
+// Sparse matrix-vector multiplication over GF(2)
+//
+// The vector is actually a block of vectors (Nx32K matrix in row-major order).
+// The block can be larger than the actual number of vectors (M).
+//
+// In linear sequence mode (POLYEVAL is not defined), the kernel computes
+// the sequence Id(m) * Mat^k * V where Id(m) is the projection on m first
+// coordinates.
+//
+// In POLYEVAL mode, a matrix polynomial ak X^k is given, and the computation
+// is:
+//   Sum(Mat^k * V * ak)
+
+#version 450
+
+#ifndef N
+#error Matrix dimension undefined
+#endif
+
+#ifndef DENSE_N
+#error Dense width undefined
+#endif
+
+#ifndef K
+#error Block size undefined
+#endif
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+// Each thread handles a row.
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Dense { uint8_t[DENSE_N] dense[]; };
+layout(binding = 1) readonly buffer Sparse { uint16_t sparse[]; };
+layout(binding = 2) readonly buffer Idx { uint sidx[]; };
+// Vector of size 2N:
+// even iterations do V[N:2N] = M * V[0:N]
+// odd iterations do V[0:N] = M * V[N:2N]
+layout(binding = 3) buffer V { uint[K] v[]; };
+// Vector of identical values (1 per workgroup) indicating iteration count
+layout(binding = 4) buffer Iter { uint iter[]; };
+#ifdef POLYEVAL
+// Polynomial sum(ak X^k)
+layout(binding = 5) readonly buffer Poly { uint[M][K] ak[]; };
+// Output sum(M^k V ak)
+layout(binding = 6) coherent buffer Wout { uint[K] wout[]; };
+#else
+// Output buffer for Wiedemann algorithm sequence: wout[iter] = sum(v[idx] where
+// wsel[idx]=1)
+layout(binding = 5) coherent buffer Wout { uint[M][K] wout[]; };
+#endif
+
+void main() {
+  uint idx = iter[gl_WorkGroupID.x];
+  uint off0 = ((idx & 1) == 0) ? 0 : N;
+  uint off1 = ((idx & 1) == 0) ? N : 0;
+  uint row = gl_GlobalInvocationID.x;
+  if (row >= N)
+    return;
+
+  uint[K] acc;
+#ifdef POLYEVAL
+  // wout[row] += acc * ak[idx]
+  acc = v[off0 + row];
+  uint[K] w = wout[row];
+  for (uint b = 0; b < M; b++) {
+    if (bitfieldExtract(acc[b / 32], int(b % 32), 1) == 1) {
+      for (uint k = 0; k < K; k++)
+        w[k] ^= ak[idx][b][k];
+    }
+  }
+  wout[row] = w;
+#endif
+  for (uint i = 0; i < K; i++)
+    acc[i] = 0;
+  // Dense block
+  for (uint i = 0; i < DENSE_N; i++) {
+    if (dense[row][i] == 1) {
+      for (uint k = 0; k < K; k++)
+        acc[k] ^= v[off0 + i][k];
+    }
+  }
+  // Sparse coefficients
+  uint i0 = sidx[row];
+  uint i1 = sidx[row + 1];
+  uint base = 0;
+  for (uint i = i0; i < i1; i++) {
+    uint c = sparse[i];
+    if (N >= 0xffff && c == 0xffff) {
+      base += 0xffff;
+      continue;
+    }
+    for (uint k = 0; k < K; k++)
+      acc[k] ^= v[off0 + base + c][k];
+  }
+  // Output result to next row
+  v[off1 + row] = acc;
+#ifndef POLYEVAL
+  // The output sequence is just v[0] .. v[m-1]
+  if (gl_GlobalInvocationID.x < M)
+    wout[idx][gl_GlobalInvocationID.x] = acc;
+#endif
+  barrier();
+  if (gl_LocalInvocationID.x == 0)
+    iter[gl_WorkGroupID.x] = idx + 1;
+}
