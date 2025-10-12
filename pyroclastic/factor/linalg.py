@@ -39,7 +39,7 @@ DEBUG_CHECK_ENCODING = False
 # Extra checks for returns kernel elements
 DEBUG_CHECK_KERNEL = False
 
-DEBUG_CHECKRELS = False or 1
+DEBUG_CHECKRELS = False
 
 logger = logging.getLogger("linalg")
 
@@ -70,20 +70,27 @@ def main_impl(args):
     N = clsargs["n"]
     logging.info(f"N = {N}")
 
-    with open(datadir / "relations.sieve") as f:
-        for l in f:
-            rel = [int(x) for x in l.split()]
-            rel[0] = -abs(rel[0])
-            rels.append((rel[0], rel[1:]))
+    if (datadir / "relations.filtered").is_file():
+        with open(datadir / "relations.filtered") as f:
+            for l in f:
+                rel = [int(x) for x in l.split()]
+                rels.append((rel[0], rel[1:]))
+        logging.info(f"Imported {len(rels)} relations")
+        filtered = rels
+    else:
+        with open(datadir / "relations.sieve") as f:
+            for l in f:
+                rel = [int(x) for x in l.split()]
+                rels.append((rel[0], rel[1:]))
+
+        logging.info(f"Imported {len(rels)} relations (before prune/filter)")
+        pruned = relations.prune_gf2(N, rels, pathlib.Path(args.DATADIR))
+        filtered = relations.filter_gf2(N, pruned, pathlib.Path(args.DATADIR))
 
     if DEBUG_CHECKRELS:
-        for x, ys in rels:
+        for x, ys in rels + filtered:
             assert (x * x) % N == algebra.product(ys) % N
         logging.info(f"Checked {len(rels)} relations")
-
-    logging.info(f"Imported {len(rels)} relations (before prune/filter)")
-    pruned = relations.prune_gf2(N, rels, pathlib.Path(args.DATADIR))
-    filtered = relations.filter_gf2(N, pruned, pathlib.Path(args.DATADIR))
 
     factors = [N]
     while any(not flint.fmpz(f).is_probable_prime() for f in factors):

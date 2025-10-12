@@ -29,7 +29,9 @@ def primebase(N, B):
             pass
 
 
-def product(l: list[int]):
+def product(l: list[int]) -> int:
+    if len(l) == 0:
+        return 1
     p = l[0]
     for x in l[1:]:
         p *= x
