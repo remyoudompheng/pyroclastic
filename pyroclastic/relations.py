@@ -382,7 +382,6 @@ def step_filter(rels, datadir: pathlib.Path | None):
                 w.write("\n")
             logging.info(f"{len(saved_pivots)} removed relations written to {w.name}")
 
-        seen = set()
         with open(datadir / "relations.filtered", "w") as w:
             for r in rels:
                 line = " ".join(f"{l}^{e}" for l, e in sorted(r.items()))

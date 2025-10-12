@@ -15,7 +15,7 @@ def smallprimes(B):
     return [int(_i) for _i in l.nonzero()[0]]
 
 
-def primebase(N, B):
+def primebase(N: int, B):
     primes = smallprimes(B)
     for p in primes:
         try:
@@ -38,7 +38,7 @@ def product(l: list[int]) -> int:
     return p
 
 
-def crt_basis(moduli):
+def crt_basis(moduli: list[int]):
     m = product(moduli)
     basis = []
     for i, mi in enumerate(moduli):
@@ -47,7 +47,7 @@ def crt_basis(moduli):
     return basis
 
 
-def is_probable_class_number(D, h):
+def is_probable_class_number(D: int, h: int):
     # Check primes up to approx. the Grenié-Molteni experimental bound
     for l, _ in primebase(D, max(1000, D.bit_length() ** 2 // 2)):
         if l == 2:

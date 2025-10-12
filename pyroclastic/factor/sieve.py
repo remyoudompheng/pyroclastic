@@ -194,7 +194,7 @@ def main():
         "-j",
         metavar="THREADS",
         type=int,
-        help="Number of CPU threads (and parallel GPU jobs)",
+        help="Number of parallel GPU jobs",
     )
     argp.add_argument("N", type=int)
     argp.add_argument("OUTDIR")
@@ -207,9 +207,6 @@ def main_impl(args: argparse.Namespace):
     logging.getLogger().setLevel(logging.INFO)
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-
-    # while len(GPU_LOCK) < args.ngpu:
-    #    GPU_LOCK.append(Semaphore(1))
 
     N = args.N
     assert N > 1
