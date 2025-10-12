@@ -152,7 +152,6 @@ class SpMV:
         weight = sum(len(r) for r in rels)
         basis, rowidx, dense, sparserows = to_sparse_matrix(rels)
         dim, dense_n = dense.shape
-        assert (dim * dense_n) % 4 == 0
         self.defines = {"N": dim, "DENSE_N": dense_n}
 
         # For debugging
@@ -161,8 +160,7 @@ class SpMV:
         self.sparserows = sparserows
 
         if DEBUG_CHECK_ENCODING:
-            assert np.all(dense >> 1 == 0)
-
+            # FIXME
             keyidx = {k: idx for idx, k in enumerate(basis)}
             for ridx in range(dim):
                 realidx = rowidx[ridx]
@@ -185,7 +183,7 @@ class SpMV:
         # Encode rows
         def encode_row(row):
             "Encode row when dimension is large"
-            nonlocal dense_n, dim
+            nonlocal dim
             if dim <= 0xFFFF:
                 return row
             enc = []
@@ -214,10 +212,10 @@ class SpMV:
         self.tensors = [xd, xplus, xidxp]
         bitsize = 32 * sum(t.size() for t in self.tensors)
         logger.debug(f"Matrix format using {bitsize / weight:.1f} bits/coefficient")
-        self.flops = dim * dense_n + size_plus
+        self.flops = dim * dense_n * 32 + size_plus
         self.weight = weight
         logger.debug(
-            f"{self.flops} int1 ops per matrix multiplication (original weight {weight})"
+            f"{self.flops} bit ops per matrix multiplication (original weight {weight})"
         )
 
     def shaders(self, defines, transpose: bool):
@@ -513,7 +511,7 @@ DENSE_ALIGN = 32
 
 def to_sparse_matrix(
     rels: list[set[int]],
-) -> tuple[list[int], list[int], npt.NDArray[np.int8], list[list[int]]]:
+) -> tuple[list[int], list[int], npt.NDArray[np.uint32], list[list[int]]]:
     """
     Converts a list of relations into a representation suitable
     for sparse matrix kernels.
@@ -524,7 +522,7 @@ def to_sparse_matrix(
     Returns:
     - primes: the list of column labels
     - rowidx: the list of relations indices used for each row
-    - dense: a dense tensor for the first n columns
+    - dense: a dense tensor (bit packed) for the first n columns
     - densebig: a tensor of big integers for large columns
     - plus, minus: a CSR representation of other columns separated by sign
     """
@@ -532,10 +530,11 @@ def to_sparse_matrix(
     for r in rels:
         for p in r:
             stats[p] = stats.get(p, 0) + 1
-    # Find densest columns above 33% fill ratio
+    # Find densest columns
     counts = sorted((count, p) for p, count in stats.items())
     dense_n = sum(1 for count, _ in counts if count > len(rels) // 4)
-    dense_n = max(DENSE_ALIGN, dense_n - dense_n % DENSE_ALIGN)
+    if dense_n % DENSE_ALIGN:
+        dense_n += DENSE_ALIGN - dense_n % DENSE_ALIGN
     dense_p = [p for _, p in counts[-dense_n:]]
     assert len(dense_p) % DENSE_ALIGN == 0
 
@@ -561,9 +560,11 @@ def to_sparse_matrix(
     rowidx = [ridx for _, ridx, _ in size_rels]
     rels = [_r for _, _, _r in size_rels]
 
-    dense = np.zeros((len(rels), len(dense_p)), dtype=np.int8)
+    dense = np.zeros((len(rels), len(dense_p) // 32), dtype=np.uint32)
     for i, r in enumerate(rels):
-        dense[i, :] = [int(p in r) for p in dense_p]
+        for j, p in enumerate(dense_p):
+            if p in r:
+                dense[i, j // 32] |= 1 << (j % 32)
 
     primes = dense_p + sorted(p for p in stats if p not in dense_set)
 

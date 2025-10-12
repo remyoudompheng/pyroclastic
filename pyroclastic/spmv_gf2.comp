@@ -30,7 +30,7 @@
 // Each thread handles a row.
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
-layout(binding = 0) readonly buffer Dense { uint8_t[DENSE_N] dense[]; };
+layout(binding = 0) readonly buffer Dense { uint[DENSE_N] dense[]; };
 layout(binding = 1) readonly buffer Sparse { uint16_t sparse[]; };
 layout(binding = 2) readonly buffer Idx { uint sidx[]; };
 // Vector of size 2N:
@@ -75,9 +75,12 @@ void main() {
     acc[i] = 0;
   // Dense block
   for (uint i = 0; i < DENSE_N; i++) {
-    if (dense[row][i] == 1) {
-      for (uint k = 0; k < K; k++)
-        acc[k] ^= v[off0 + i][k];
+    uint dij = dense[row][i];
+    for (int j = 0; j < 32; j++) {
+      if (bitfieldExtract(dij, j, 1) == 1) {
+        for (uint k = 0; k < K; k++)
+          acc[k] ^= v[off0 + 32 * i + j][k];
+      }
     }
   }
   // Sparse coefficients
