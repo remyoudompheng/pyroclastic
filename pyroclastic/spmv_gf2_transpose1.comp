@@ -44,6 +44,8 @@ layout(binding = 5) readonly buffer Poly { uint[M][K] ak[]; };
 // Output sum(M^k V ak)
 layout(binding = 6) coherent buffer Wout { uint[K] wout[]; };
 
+#define UNROLL 16
+
 void main() {
   uint idx = iter[gl_WorkGroupID.x];
   uint off0 = ((idx & 1) == 0) ? 0 : N;
@@ -83,7 +85,52 @@ void main() {
   uint i0 = sidx[row];
   uint i1 = sidx[row + 1];
   uint base = 0;
-  for (uint i = i0; i < i1; i++) {
+  uint i = i0;
+#ifdef UNROLL
+  // Partial unroll groups of UNROLL indices.
+  for (i = i0; i + UNROLL < i1; i += UNROLL) {
+    uint c[UNROLL];
+    for (uint ii = 0; ii < UNROLL; ii++)
+      c[ii] = sparse[i + ii];
+    for (uint ii = 0; ii < UNROLL; ii++) {
+      if (N >= 0xffff && c[ii] == 0xffff) {
+        base += 0xffff;
+        c[ii] = -1;
+      } else {
+        c[ii] = base + c[ii];
+      }
+    }
+    for (uint ii = 0; ii < UNROLL; ii++) {
+      if (c[ii] != -1) {
+        for (uint k = 0; k < K; k++)
+          atomicXor(v[off1 + c[ii]][k], vi[k]);
+      }
+    }
+  }
+#endif
+#if defined(UNROLL) && UNROLL > 4
+  // Unroll block of 4
+  for (; i + 4 < i1; i += 4) {
+    uint c[4];
+    for (uint ii = 0; ii < 4; ii++)
+      c[ii] = sparse[i + ii];
+    for (uint ii = 0; ii < 4; ii++) {
+      if (N >= 0xffff && c[ii] == 0xffff) {
+        base += 0xffff;
+        c[ii] = -1;
+      } else {
+        c[ii] = base + c[ii];
+      }
+    }
+    for (uint ii = 0; ii < 4; ii++) {
+      if (c[ii] != -1) {
+        for (uint k = 0; k < K; k++)
+          atomicXor(v[off1 + c[ii]][k], vi[k]);
+      }
+    }
+  }
+#endif
+  for (; i < i1; i++) {
     uint c = sparse[i];
     if (N >= 0xffff && c == 0xffff) {
       base += 0xffff;
