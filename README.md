@@ -82,6 +82,17 @@ The sparse matrix-vector product has multiple implementations:
   It is more efficient on AMD devices.
 * other kernels exist in the repository for benchmarking purposes
 
+## Integer factorization
+
+The quadratic sieve can also be used to factorize integers.
+The (work in progress) command `pyroclastic-factor` implements this process.
+
+On a AMD Radeon 780M integrated GPU, RSA-110 can be factorized in about 45 minutes,
+and RSA-120 can be factorized in about 4 hours.
+
+On a dual Nvidia RTX 3080 computer, RSA-120 can be factorized in about 45 minutes,
+and RSA-130 can be factorized in about 5 hours.
+
 ## Bibliography
 
 Henri Cohen, Calcul du nombre de classes d'un corps quadratique imaginaire ou
