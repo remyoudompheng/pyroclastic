@@ -47,6 +47,7 @@ logger = logging.getLogger("linalg")
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--bench", action="store_true")
     p.add_argument("--deterministic", action="store_true")
     p.add_argument("DATADIR")
     args = p.parse_args()
@@ -92,6 +93,10 @@ def main_impl(args):
             assert (x * x) % N == algebra.product(ys) % N
         logging.info(f"Checked {len(rels)} relations")
 
+    if args.bench:
+        bench(filtered)
+        return
+
     factors = [N]
     while any(not flint.fmpz(f).is_probable_prime() for f in factors):
         M = SpMV([facs for _, facs in filtered])
@@ -129,6 +134,59 @@ def main_impl(args):
         if not flint.fmpz(f).is_probable_prime():
             logging.info(f"Factor {f} is composite")
         print(f)
+
+
+def bench(rels, check=False):
+    random.seed(42)
+    M = SpMV([r for _, r in rels])
+    WGSIZE = 128
+    mgr = M.mgr
+    dim = M.dim
+    N_WG = (dim + WGSIZE - 1) // WGSIZE
+
+    BATCHSIZE = 16
+
+    # MV benchmark
+    for m in (4, 8, 16, 32):
+        K = (m + 31) // 32
+        ITERS = 1000
+
+        defines = M.defines | {"M": m, "K": K}
+        v = np.zeros((2, dim, K), dtype=np.uint32)
+        for i in range(dim):
+            for j in range(K):
+                v[0, i, j] = random.getrandbits(32)
+        xv = mgr.tensor_t(v.flatten())
+        xiter = mgr.tensor_t(np.zeros(N_WG, dtype=np.uint32))
+        xout = mgr.tensor_t(np.zeros(ITERS * K * m, dtype=np.uint32))
+
+        tensors = M.tensors + [xv, xiter, xout]
+
+        t0 = time.monotonic()
+        gpu_ticks = M._run(tensors, defines, ITERS, BATCHSIZE, N_WG)
+        mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
+        dt = time.monotonic() - t0
+
+        gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
+        flops = M.flops * ITERS * m / gpu_dt
+        speed = ITERS * m / gpu_dt
+        logger.info(
+            f"Block matrix-vector m={m} completed in {dt:.3f}s "
+            + f"(GPU {gpu_dt:.3}s, {ITERS / gpu_dt:.1f} iters/s, {flops / 1e9:.2f} GOPS, {speed:.1f} SpMV/s)"
+        )
+
+        t0 = time.monotonic()
+        gpu_ticks = M._run(tensors, defines, ITERS, BATCHSIZE, N_WG, transpose=True)
+        mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
+        dt = time.monotonic() - t0
+
+        gpu_dt = gpu_ticks * gpu.stamp_period() * 1e-9
+        flops = M.flops * ITERS * m / gpu_dt
+        speed = ITERS * m / gpu_dt
+        logger.info(
+            f"Block transpose VM m={m} completed in {dt:.3f}s "
+            + f"(GPU {gpu_dt:.3}s, {ITERS / gpu_dt:.1f} iters/s, {flops / 1e9:.2f} GOPS, {speed:.1f} SpMV/s)"
+        )
 
 
 class SpMV:
