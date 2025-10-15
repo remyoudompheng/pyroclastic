@@ -11,7 +11,7 @@ import argparse
 import json
 import logging
 import math
-from multiprocessing import Pool
+from multiprocessing import Pool, Semaphore
 import os
 import time
 
@@ -190,6 +190,7 @@ def get_params(N: int, bias: float | None = None) -> tuple:
 def main():
     argp = argparse.ArgumentParser()
     argp.add_argument("-v", "--verbose", action="store_true")
+    argp.add_argument("--dev", help="List of GPU devices (example: 0,1,2)")
     argp.add_argument(
         "-j",
         metavar="THREADS",
@@ -295,10 +296,18 @@ def main_impl(args: argparse.Namespace):
         "SUBSEGMENT_SIZE": SUBSEGMENT_SIZE,
     }
 
+    if args.dev:
+        gpu_ids = [int(_id) for _id in args.dev.split(",")]
+    else:
+        gpu_ids = [0]
+    sieve.GPU_LOCK.clear()
+    for _id in gpu_ids:
+        sieve.GPU_LOCK.append((_id, Semaphore(1)))
     if args.j:
         NWORKERS = args.j
     else:
-        NWORKERS = 2 if USE_SIEVER2 else 4
+        NWORKERS = len(gpu_ids) * (2 if USE_SIEVER2 else 4)
+
     sieve_pool = Pool(NWORKERS, initializer=worker_init, initargs=(WARGS,))
     sieved = 0
     start_time = time.monotonic()

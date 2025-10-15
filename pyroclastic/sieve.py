@@ -303,8 +303,7 @@ def get_params2(N: int, bias: float | None = None) -> tuple:
     return res[1:]
 
 
-# At most 2 GPU jobs at a time
-GPU_LOCK = [Semaphore(1)]
+GPU_LOCK: list[tuple[int, object]] = [(0, Semaphore(1))]
 
 
 class Siever:
@@ -369,9 +368,10 @@ class Siever:
         proc = current_process()
         proc_id = proc._identity or (0,)
         self.gpu_idx = proc_id[-1] % len(GPU_LOCK)
-        mgr = kp.Manager(self.gpu_idx)
+        self.device_id = GPU_LOCK[self.gpu_idx][0]
+        mgr = kp.Manager(self.device_id)
         gpu_name = mgr.get_device_properties().get("device_name", "unknown")
-        logging.info(f"Worker {proc.name} running on GPU {self.gpu_idx} ({gpu_name})")
+        logging.info(f"Worker {proc.name} running on GPU {self.device_id} ({gpu_name})")
         xp = mgr.tensor_t(np.array(primes, dtype=np.uint32))
         xn = mgr.tensor_t(np.array(roots, dtype=np.uint32))
         nsumroots = (
@@ -534,7 +534,7 @@ class Siever:
         xout.data().fill(0)
         xfacs.data().fill(0)
 
-        with GPU_LOCK[self.gpu_idx]:
+        with GPU_LOCK[self.gpu_idx][1]:
             seq = (
                 self.mgr.sequence(total_timestamps=16)
                 .record(kp.OpTensorSyncDevice([xb, xout, xfacs, xargs]))
@@ -634,9 +634,10 @@ class Siever2:
         proc = current_process()
         proc_id = proc._identity or (0,)
         self.gpu_idx = proc_id[-1] % len(GPU_LOCK)
-        mgr = kp.Manager(self.gpu_idx)
+        self.device_id = GPU_LOCK[self.gpu_idx][0]
+        mgr = kp.Manager(self.device_id)
         gpu_name = mgr.get_device_properties().get("device_name", "unknown")
-        logging.info(f"Worker {proc.name} running on GPU {self.gpu_idx} ({gpu_name})")
+        logging.info(f"Worker {proc.name} running on GPU {self.device_id} ({gpu_name})")
         xp = mgr.tensor_t(np.array(primes, dtype=np.uint32))
         xn = mgr.tensor_t(np.array(roots, dtype=np.uint32))
         assert AFACS >= 17 and AFACS & 1 == 1
@@ -819,7 +820,7 @@ class Siever2:
             xb.data()[BLEN * i : BLEN * (i + 1)] = to_uvec(Bi[i], BLEN)
         xout.data().fill(0)
 
-        with GPU_LOCK[self.gpu_idx]:
+        with GPU_LOCK[self.gpu_idx][1]:
             seq = (
                 self.mgr.sequence(total_timestamps=16)
                 .record(kp.OpTensorSyncDevice([xb, xout, xargs]))
@@ -892,7 +893,7 @@ def main_impl(args: argparse.Namespace):
         logging.getLogger().setLevel(logging.DEBUG)
 
     while len(GPU_LOCK) < args.ngpu:
-        GPU_LOCK.append(Semaphore(1))
+        GPU_LOCK.append((len(GPU_LOCK), Semaphore(1)))
 
     N = args.N
     D = -abs(N)

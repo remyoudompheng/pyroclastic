@@ -12,8 +12,7 @@ def main():
     argp.add_argument("-v", "--verbose", action="store_true")
 
     sieve_args = argp.add_argument_group("Sieve options")
-    sieve_args.add_argument("--check", action="store_true", help="Verify relations")
-    sieve_args.add_argument("--siever2", action="store_true", help="Use Siever2")
+    sieve_args.add_argument("--dev", help="List of GPU device ids (example: 0,1,2)")
 
     linalg_args = argp.add_argument_group("Linear algebra options")
     linalg_args.add_argument("--deterministic", action="store_true")
@@ -22,7 +21,7 @@ def main():
         "-j",
         metavar="THREADS",
         type=int,
-        default=2,
+        default=0,
         help="Number of CPU threads (and parallel GPU jobs)",
     )
     argp.add_argument("N", type=int)
