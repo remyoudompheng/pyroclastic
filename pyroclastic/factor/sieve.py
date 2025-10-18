@@ -361,7 +361,7 @@ def main_impl(args: argparse.Namespace):
                     xdups += 1
                     continue
                 xseen.add(x0)
-                print(" ".join(str(_x) for _x in row), file=w)
+                print(hex(x0), *row[1:], file=w)
                 results.append(row[1:])
 
             _nr = len(results)

@@ -15,7 +15,7 @@ from pyroclastic import algebra
 
 RelFac = tuple[int, list[int]]
 
-DEBUG_CHECK_RELFAC = True
+DEBUG_CHECK_RELFAC = False
 
 
 def prune_gf2(
@@ -39,7 +39,7 @@ def prune_gf2(
         div = 1
         for l in sorted(rel):
             if rel2 and l == rel2[-1]:
-                div *= l
+                div *= int(l)
                 rel2.pop()
             else:
                 rel2.append(l)
@@ -119,10 +119,10 @@ def prune_gf2(
         if singles:
             logging.info(f"[prune] pruned {singles} singletons")
 
-        m2 = [(p, rs) for p, rs in stats.items() if rs is not None and len(rs) == 2]
         g = Graph()
-        for p, rs in m2:
-            g.add_edge(*rs)
+        for p, rs in stats.items():
+            if rs is not None and len(rs) == 2:
+                g.add_edge(*rs)
         # They are not cliques at all but the term is used in literature.
         cliques = list(connected_components(g))
         cliques.sort(key=score)

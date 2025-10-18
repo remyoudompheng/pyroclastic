@@ -79,12 +79,19 @@ def main_impl(args):
         logging.info(f"Imported {len(rels)} relations")
         filtered = rels
     else:
-        with open(datadir / "relations.sieve") as f:
+        t0 = time.monotonic()
+        with open(datadir / "relations.sieve", encoding="ascii") as f:
             for l in f:
-                rel = [int(x) for x in l.split()]
-                rels.append((rel[0], rel[1:]))
-
-        logging.info(f"Imported {len(rels)} relations (before prune/filter)")
+                words = l.split()
+                # Large numbers are output as hex for faster parsing
+                r0 = int(words[0], base=0)
+                # Numpy converts strings implicitly
+                rel = np.array(words[1:], dtype=np.int32)
+                rels.append((r0, rel))
+        dt = time.monotonic() - t0
+        logging.info(
+            f"Imported {len(rels)} relations (before prune/filter) in {dt:.3f}s"
+        )
         pruned = relations.prune_gf2(N, rels, pathlib.Path(args.DATADIR))
         filtered = relations.filter_gf2(N, pruned, pathlib.Path(args.DATADIR))
 
