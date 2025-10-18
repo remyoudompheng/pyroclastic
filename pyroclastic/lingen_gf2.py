@@ -26,6 +26,9 @@ DEBUG_LINGEN = False
 
 DEBUG_CHECK_LINGEN = False
 
+# Check invariants of the main algorithm.
+DEBUG_CHECK_INVARIANTS = False
+
 
 def lingen(sequences, N: int):
     """
@@ -50,10 +53,8 @@ def lingen(sequences, N: int):
     for i, seq in enumerate(sequences):
         M[i, 0] = sum(1 << i for i, b in enumerate(seq) if b)
 
-    retries = 0
     for t0 in range(m, m + 4):
         for _ in range(10):
-            retries += 1
             F = numpy.zeros((1, 1 + m), dtype=object)
             seen = set([0])
             for i in range(m):
@@ -89,8 +90,6 @@ def lingen(sequences, N: int):
             break
 
     assert E0det != 0
-    if retries > 1:
-       print(retries, "init retries")
     # print("Selected t0 =", t0)
     # Constraint (Thomé, section 2.3.2)
     # Eij[0] must be a matrix of rank m
@@ -102,7 +101,7 @@ def lingen(sequences, N: int):
         for i, j in numpy.ndindex(*E.shape):
             print(f"before E[{i},{j}]", hex(E[i, j]))
 
-    P = mslgdc(E, delta, N + N // m + EXTRA_ITERS)
+    P = mslgdc_array(E, delta, N + N // m + EXTRA_ITERS)
     if DEBUG_LINGEN:
         for i, j in numpy.ndindex(*E.shape):
             print(f"after E[{i},{j}]", hex(E[i, j]))
@@ -202,7 +201,7 @@ def lingen_mat(mats, N: int):
         for i, j in numpy.ndindex(*E.shape):
             print(f"before E[{i},{j}]", hex(E[i, j]))
 
-    P = mslgdc(E, delta, N // m + N // n + EXTRA_ITERS)
+    P = mslgdc_array(E, delta, N // m + N // n + EXTRA_ITERS)
     if DEBUG_LINGEN:
         for i, j in numpy.ndindex(*E.shape):
             print(f"after E[{i},{j}]", hex(E[i, j]))
@@ -349,6 +348,117 @@ def lingen_step(
             for i in range(m):
                 assert E[i, j] & 1 == 0
                 E[i, j] >>= 1
+    # debug("P", P)
+    return P, delta
+
+
+def mslgdc_array(E, delta, b):
+    B = b // 32 + 1
+    m, mn = E.shape
+    EE = numpy.zeros((m, mn, B), dtype=numpy.uint32)
+    for i in range(m):
+        for j in range(mn):
+            eij = E[i, j].to_bytes(max(4 * B, E[i, j].bit_length() // 8 + 1), "little")
+            EE[i, j] = [
+                int.from_bytes(eij[4 * k : 4 * k + 4], "little") for k in range(B)
+            ]
+
+    P = None
+    t0 = delta[0]
+    for t in range(t0, max(t0 + 1, 32 * B)):
+        P, delta = lingen_step_array(EE, delta, t, P=P)
+        # print(delta)
+
+    # Output by increasing value of delta
+    delta_sort = sorted((_d, _i) for _i, _d in enumerate(delta))
+    Pint = numpy.zeros((mn, mn), dtype=object)
+    for i in range(mn):
+        for j in range(mn):
+            jsort = delta_sort[j][1]
+            pij = b"".join([int(pijk).to_bytes(4, "little") for pijk in P[i, jsort, :]])
+            Pint[i, j] = int.from_bytes(pij, "little")
+    return Pint
+
+
+def lingen_step_array(
+    E: npt.NDArray, delta: list[int], t: int, P=None
+) -> tuple[npt.NDArray, list[int]]:
+    """
+    Similar to lingen_step but operates on numpy.array:
+    each polynomial is a row of uint32 integers.
+    """
+    # print("t =", t)
+    m, mn, b = E.shape
+    if P is None:
+        P = numpy.zeros((mn, mn, b), dtype=numpy.uint32)
+        for i in range(mn):
+            P[i, i, 0] = 1
+
+    dege = b - t // 32
+    # Sort columns
+    delta_sort = sorted((_d, _i) for _i, _d in enumerate(delta))
+    idx_sort = [_i for _, _i in delta_sort]
+    if DEBUG_CHECK_INVARIANTS:
+        # Check invariants:
+        # PM = G + X^t E
+        # where degree(G[j]) < delta[j] and degree(E[j]) <= N-t+delta[j]
+        #
+        # Actually we only consider PM mod X^b, so we can truncate E to degree b-t
+        for i in range(mn):
+            le = (t - delta[i]) // 32
+            if le > 0:
+                for j in range(m):
+                    assert numpy.all(E[j, i, -le:] == 0), (
+                        delta[j],
+                        t,
+                        list(E[j, i, :]),
+                        le,
+                    )
+            lp = delta[i] // 32 + 1
+            for j in range(mn):
+                assert numpy.all(P[j, i, lp:] == 0)
+    # Eliminate without increasing degree (col[j] is cancelled using col[j0<j])
+    nonzero = set()
+    for i in range(m):
+        # Find first nonzero element of row i
+        try:
+            j0 = next(
+                j
+                for j, jsort in enumerate(idx_sort)
+                if (E[i, jsort, 0] & 1) and jsort not in nonzero
+            )
+        except StopIteration:
+            continue
+        jsort0 = idx_sort[j0]
+        nonzero.add(jsort0)
+        assert E[i, jsort0, 0] & 1 == 1
+        # Use it to eliminate next columns
+        # Note that delta[j0] <= delta[j]
+        for j in idx_sort[j0 + 1 :]:
+            lp = delta[j] // 32 + 1
+            if E[i, j, 0] & 1:
+                E[:, j, :dege] ^= E[:, jsort0, :dege]
+                P[:, j, :lp] ^= P[:, jsort0, :lp]
+    if DEBUG_LINGEN:
+        for i, j in numpy.ndindex(*E.shape):
+            if E[i, j] & 1:
+                assert j in nonzero
+    # Now each row has 1 nonzero coefficient
+    for j in range(mn):
+        if j in nonzero:
+            # P[j] *= X
+            delta[j] += 1
+            lp = min(b, delta[j] // 32 + 1)
+            P[:, j, 1:lp] = (P[:, j, 1:lp] << 1) | (P[:, j, 0 : lp - 1] >> 31)
+            P[:, j, 0] <<= 1
+        else:
+            le = b - t // 32
+            # E[j] /= X
+            if dege == b:
+                E[:, j, :-1] = (E[:, j, :-1] >> 1) | (E[:, j, 1:] << 31)
+                E[:, j, -1] >>= 1
+            else:
+                E[:, j, :dege] = (E[:, j, :dege] >> 1) | (E[:, j, 1 : dege + 1] << 31)
     # debug("P", P)
     return P, delta
 
