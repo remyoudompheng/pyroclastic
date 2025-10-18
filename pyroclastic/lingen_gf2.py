@@ -50,8 +50,10 @@ def lingen(sequences, N: int):
     for i, seq in enumerate(sequences):
         M[i, 0] = sum(1 << i for i, b in enumerate(seq) if b)
 
+    retries = 0
     for t0 in range(m, m + 4):
         for _ in range(10):
+            retries += 1
             F = numpy.zeros((1, 1 + m), dtype=object)
             seen = set([0])
             for i in range(m):
@@ -87,6 +89,8 @@ def lingen(sequences, N: int):
             break
 
     assert E0det != 0
+    if retries > 1:
+       print(retries, "init retries")
     # print("Selected t0 =", t0)
     # Constraint (Thomé, section 2.3.2)
     # Eij[0] must be a matrix of rank m
@@ -138,42 +142,55 @@ def lingen_mat(mats, N: int):
 
     for t0 in range(m, m + 4):
         for _ in range(10):
-            F = numpy.zeros((n, n + m), dtype=object)
+            # To obtain a nonsingular matrix, choose a larger number of columns
+            EXTRA = 16
+            F = numpy.zeros((n, m + EXTRA), dtype=object)
             for i in range(n):
-                for j in range(m):
+                for j in range(m + EXTRA):
                     r = random.getrandbits(t0)
                     F[i, j] = r
-            for i in range(n):
-                F[i, i + m] = 1 << t0
 
             # Compute matrix product E = (M @ F) >> m
-            E = numpy.zeros((m, n + m), dtype=object)
+            E = numpy.zeros((m, m + EXTRA), dtype=object)
             for i in range(m):
-                for j in range(n + m):
+                for j in range(m + EXTRA):
                     eij = 0
                     for k in range(n):
                         eij ^= clmul(M[i, k], F[k, j]) >> t0
                     E[i, j] = eij
 
-            E0 = (E[:, :m] & 1).astype(numpy.uint8)
+            # Now find a nonsingular submatrix
+            E0 = (E & 1).astype(numpy.uint8)
             js = set()
-            E0det = 1
+            sing = False
             for i in range(m):
                 try:
-                    j0 = next(j for j in range(m) if j not in js and E0[i, j])
+                    j0 = next(j for j in range(m + EXTRA) if j not in js and E0[i, j])
                 except StopIteration:
-                    E0det = 0
+                    sing = True
                     break
                 js.add(j0)
                 for j in range(m):
                     if j not in js and E0[i, j]:
                         E0[:, j] ^= E0[:, j0]
-            if E0det != 0:
+
+            # Extract submatrix and augment with X^t0 Identity
+            Esub = numpy.zeros((m, n + m), dtype=object)
+            Fsub = numpy.zeros((n, n + m), dtype=object)
+            for i, j in enumerate(sorted(js)):
+                Esub[:, i] = E[:, j]
+                Fsub[:, i] = F[:, j]
+            for i in range(n):
+                Fsub[i, i + m] = 1 << t0
+                Esub[:, i + m] = M[:, i]
+            E, F = Esub, Fsub
+
+            if not sing:
                 break
-        if E0det != 0:
+        if not sing:
             break
 
-    assert E0det != 0
+    assert not sing
     # print("Selected t0 =", t0)
     # Constraint (Thomé, section 2.3.2)
     # Eij[0] must be a matrix of rank m
