@@ -1,16 +1,21 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-FileCopyrightText: 2025-2026 Rémy O
+
 import argparse
 import logging
 import tempfile
 
 from . import gpu
-from . import sieve
-from . import linalg
 from . import groupstruct
+from . import linalg
+from . import logs
+from . import sieve
 
 
 def main():
     argp = argparse.ArgumentParser()
     argp.add_argument("-v", "--verbose", action="store_true")
+    argp.add_argument("--otlp", action="store_true")
 
     sieve_args = argp.add_argument_group("Sieve options")
     sieve_args.add_argument("--check", action="store_true", help="Verify relations")
@@ -47,9 +52,10 @@ def main():
     args = argp.parse_args()
     args.bench = False
 
-    logging.getLogger().setLevel(logging.INFO)
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logs.setup(level)
+    if args.otlp:
+        logs.setup_otlp()
 
     logging.info(f"Running on device {gpu.device_name()}")
 
