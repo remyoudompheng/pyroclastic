@@ -1,0 +1,27 @@
+[package]
+name = "pyroclastic-rust"
+version = "0.1.0"
+rust-version = "1.80" # for LazyLock
+edition = "2021"
+description = "Pyroclastic utility functions"
+license = "BSD3"
+
+[lib]
+name = "pyroclastic_rust"
+path = "rust/src/lib.rs"
+crate-type = ["cdylib"]
+
+[resolver]
+incompatible-rust-versions = "fallback"
+
+[dependencies]
+pyo3 = { version = "0.26", features = ["abi3-py37", "extension-module", "num-bigint"] }
+num-bigint = "0.4" # consistency with pyo3
+num-integer = "0.1"
+num-traits = "0.2"
+
+[profile.release]
+debug = 2
+
+[lints.clippy]
+needless_range_loop = "allow"
