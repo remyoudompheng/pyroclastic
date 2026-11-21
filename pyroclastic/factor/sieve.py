@@ -19,7 +19,7 @@ from multiprocessing import Pool, Semaphore
 
 import numpy.typing as npt
 
-from pyroclastic import algebra, relations, sieve
+from pyroclastic import algebra, logs, relations, sieve
 
 logger = logging.getLogger("sieve")
 
@@ -352,6 +352,9 @@ def main_impl(args: argparse.Namespace):
         Aseen.update(As)
 
         for dt, nreports, rows in sieve_pool.imap_unordered(worker_task, As):
+            logs.Metrics.polys.add(WORKCHUNK)
+            logs.Metrics.reports.add(nreports)
+            logs.Metrics.relations.add(len(rows))
             for row in rows:
                 all_primes.update(abs(_p) for _p in row[1:])
                 x0 = min(row[0], D - row[0])
