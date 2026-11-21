@@ -404,9 +404,12 @@ def main_impl(args: argparse.Namespace):
                 needed = max(500, min(20000, 2 * abs(curexc)))
                 next_check = gap + needed
 
+    # Don't wait for pending sieve jobs
+    sieve_pool.terminate()
     sieve_pool.close()
-    avg_speed = sieved / (time.monotonic() - start_time)
-    rel_speed = _nr / (time.monotonic() - start_time)
+    dt = time.monotonic() - start_time
+    avg_speed = sieved / dt
+    rel_speed = _nr / dt
     logger.info(
         f"Sieved {nb} A ({sieved / 1e6:.0f}M) in {dt:.3f}s (avg {avg_speed / 1e9:.1f}G/s) (relations={_nr} [{rel_speed:.1f}/s] primes={_np} excess={_nr - _np})"
     )
