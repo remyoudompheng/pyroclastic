@@ -41,12 +41,7 @@ import flint
 import kp
 import numpy as np
 import numpy.typing as npt
-
-try:
-    import pymqs
-except ImportError:
-    pymqs = None
-
+import pymqs
 import pyroclastic_flint_extras as flint_extras
 
 from . import algebra, gpu, relations
@@ -202,17 +197,11 @@ def build_relation(
             v //= f
     if v == 1:
         return row
-    if pymqs is not None:
-        cofacs = [
-            (_l, 1) for _l in pymqs.factor_smooth(v, B2.bit_length() if B2 else 20)
-        ]
-    else:
-        cofacs = flint.fmpz(v).factor_smooth(bits=B2.bit_length() if B2 else 20)
-    for _p, _e in cofacs:
+    cofacs = pymqs.factor_smooth(v, B2.bit_length() if B2 else 20)
+    for _p in cofacs:
         if not flint.fmpz(_p).is_probable_prime():
             return None
-        # logger.error(f"WARNING: uncaught small prime {_p}")
-        row.extend(_e * [_p])
+        row.append(_p)
     return row
 
 

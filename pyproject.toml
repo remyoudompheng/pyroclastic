@@ -13,12 +13,12 @@ license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 
 dependencies = [
-  "python-flint==0.6 ; python_version <= '3.10'",
-  "python-flint>=0.7 ; python_version >= '3.11'",
+  "python-flint>=0.7",
   "kp==0.9.0",
   "opentelemetry-exporter-otlp-proto-http",
   "tqdm>=4.0",
-  "networkx>=3.2"
+  "networkx>=3.2",
+  "pymqs @ https://github.com/remyoudompheng/yamaquasi/releases/download/0.3/pymqs-0.3-cp37-abi3-manylinux_2_28_x86_64.whl#sha256=51116230be394e90c92eba9bd2d159a137712e9f18ff7e60239547514f4f54b5 ; platform_system=='Linux' and platform_machine=='x86_64'"
 ]
 
 [project.optional-dependencies]
