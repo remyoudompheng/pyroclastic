@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-FileCopyrightText: 2025-2026 Rémy O
 """
 Quadratic Sieve for factoring
 
@@ -11,15 +13,15 @@ import argparse
 import json
 import logging
 import math
-from multiprocessing import Pool, Semaphore
 import os
 import time
+from multiprocessing import Pool, Semaphore
 
 import numpy.typing as npt
 
-from pyroclastic import algebra
-from pyroclastic import relations
-from pyroclastic import sieve
+from pyroclastic import algebra, relations, sieve
+
+logger = logging.getLogger("sieve")
 
 
 def multiplier(N: int) -> int:
@@ -88,7 +90,7 @@ class Siever2(sieve.Siever2):
         A, ak, Bi = ABi
         nout = int(vout[0])
         if nout >= len(vout):
-            logging.error(f"output buffer too small {nout}/{len(vout)}")
+            logger.error(f"output buffer too small {nout}/{len(vout)}")
         futures = []
         for oidx in range(min(len(vout) - 1, nout)):
             v = int(vout[oidx + 1])
@@ -232,16 +234,12 @@ def main():
 
 
 def main_impl(args: argparse.Namespace):
-    logging.getLogger().setLevel(logging.INFO)
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
     N = args.N
     assert N > 1
     k, bias = multiplier(N)
     D = k * N
-    logging.info(f"Multiplier is {k}")
-    logging.info(f"Sieve smoothness bias is {bias:.2f} bits")
+    logger.info(f"Multiplier is {k}")
+    logger.info(f"Sieve smoothness bias is {bias:.2f} bits")
 
     B1, B2k, EXTRA_THRESHOLD, AFACS, INTERVAL_SIZE = get_params(N, bias)
     USE_SIEVER2 = AFACS >= 17
@@ -272,17 +270,17 @@ def main_impl(args: argparse.Namespace):
         assert (r * r - D) % p == 0
         primes.append(p)
         roots.append(r)
-    logging.debug(
+    logger.debug(
         f"Prime base size {len(primes)} {primes[:10]} ... {primes[-1]}, B2={B2 / 1e6:.1f}M"
     )
-    logging.debug(f"Interval size {M // 512}k")
+    logger.debug(f"Interval size {M // 512}k")
 
     # Target A such that AM²~=-2C where -4AC~=D
     A0 = int(math.sqrt(abs(D / 2)) / M)
     # Enforce at least 2 words, because A can grow for very small D.
     BLEN = max(2, (A0.bit_length() + 36) // 32)
     WORKCHUNK = 2 ** (AFACS - 1)
-    logging.debug(f"{AFACS} factors per A, {BLEN} words per coefficient")
+    logger.debug(f"{AFACS} factors per A, {BLEN} words per coefficient")
 
     results = []
     all_primes: set[int] = set()
@@ -374,7 +372,7 @@ def main_impl(args: argparse.Namespace):
                 cur_speed = (sieved - last_sieved) / (time.monotonic() - last_print)
                 last_sieved = sieved
                 last_print = time.monotonic()
-                print(
+                logger.info(
                     f"Chunk {nb} ({sieved / 1e6:.0f}M) done in {dt:.3f}s ({cur_speed / 1e9:.1f}G/s avg {avg_speed / 1e9:.1f}G/s) "
                     + f"{len(rows)}/{nreports} items (relations={_nr} [{rel_speed:.4g}/s] primes={_np} excess={_nr - _np})"
                 )
@@ -409,17 +407,21 @@ def main_impl(args: argparse.Namespace):
     sieve_pool.close()
     avg_speed = sieved / (time.monotonic() - start_time)
     rel_speed = _nr / (time.monotonic() - start_time)
-    logging.info(
+    logger.info(
         f"Sieved {nb} A ({sieved / 1e6:.0f}M) in {dt:.3f}s (avg {avg_speed / 1e9:.1f}G/s) (relations={_nr} [{rel_speed:.1f}/s] primes={_np} excess={_nr - _np})"
     )
 
     total_time = time.monotonic() - start_time
     if xdups:
-        logging.warning(f"Ignored {xdups} duplicate relations")
-    logging.info(
+        logger.warning(f"Ignored {xdups} duplicate relations")
+    logger.info(
         f"Got {len(results)} relations with {len(all_primes)} primes in {total_time:.3f}s"
     )
 
 
 if __name__ == "__main__":
+    import pyroclastic.logs
+
+    pyroclastic.logs.setup(logging.DEBUG)
+
     main()

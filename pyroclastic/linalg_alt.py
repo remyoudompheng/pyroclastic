@@ -38,6 +38,8 @@ from . import gpu
 from . import linalg
 import pyroclastic_flint_extras as flint_extras
 
+logger = logging.getLogger("linalg")
+
 
 class SpMV:
     """
@@ -107,10 +109,10 @@ class SpMV:
         self.mgr = mgr
         self.tensors = [xd, xplus, xminus, xidxp, xidxm]
         bitsize = 32 * sum(t.size() for t in self.tensors)
-        logging.debug(f"Matrix format using {bitsize / weight:.1f} bits/coefficient")
+        logger.debug(f"Matrix format using {bitsize / weight:.1f} bits/coefficient")
         self.flops = 2 * dim * dense_n + size_plus + size_minus
         self.weight = weight
-        logging.debug(
+        logger.debug(
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
         )
 
@@ -189,7 +191,7 @@ class SpMV:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.debug(
+        logger.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -221,10 +223,10 @@ class SpMV:
             assert linalg.check_wiedemann(sequence, poly, l)
             assert len(poly) == dim + 1, len(poly)
             det = -poly[0] * pow(poly[dim], -1, l) % l
-            logging.info(f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det}")
+            logger.info(f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det}")
 
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
 
@@ -314,7 +316,7 @@ class SpMV:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.debug(
+        logger.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -340,7 +342,7 @@ class SpMV:
         speed = ITERS * MODULI / gpu_dt
 
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Krylov completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return {
@@ -411,10 +413,10 @@ class SpMV:
             assert linalg.check_wiedemann(sequence, poly, l)
             assert len(poly) == dim + 1, len(poly)
             det = -poly[0] * pow(poly[dim], -1, l) % l
-            logging.info(f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det}")
+            logger.info(f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det}")
 
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Wiedemann completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
 
@@ -486,7 +488,7 @@ class SpMV:
         mgr.sequence().record(kp.OpTensorSyncLocal([xout])).eval()
         vout = xout.data().reshape((dim, ALEN))
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Polyeval completed in {dt:.3f}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return [from_uvec(vout[i, :]) % l for i in range(dim)]
@@ -681,7 +683,7 @@ class BlockCOO:
         self.tensors = [xd, xplus, xminus, xidxp, xidxm]
         self.flops = 2 * dim * dense_n + len(idx_plus) + len(idx_minus)
         self.weight = weight
-        logging.debug(
+        logger.debug(
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
         )
 
@@ -755,7 +757,7 @@ class BlockCOO:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.debug(
+        logger.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -790,10 +792,10 @@ class BlockCOO:
                 assert linalg.check_wiedemann(sequence, poly, li)
                 assert len(poly) == dim + 1
                 det = -poly[0] * pow(poly[dim], -1, li) % li
-                logging.info(f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}")
+                logger.info(f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}")
 
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return polys
@@ -892,7 +894,7 @@ class BlockCOOv2:
         self.tensors = [xd, xplus, xminus, xidxp, xidxm]
         self.flops = 2 * dim * dense_n + len(idx_plus) + len(idx_minus)
         self.weight = weight
-        logging.debug(
+        logger.debug(
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
         )
 
@@ -967,7 +969,7 @@ class BlockCOOv2:
             xd.size() + xplus.size() + xminus.size() + xidxp.size() + xidxm.size()
         )
         vec_size = 4 * xv.size()
-        logging.debug(
+        logger.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -1003,12 +1005,12 @@ class BlockCOOv2:
                 assert len(poly) == dim + 1
                 det = -poly[0] * pow(poly[dim], -1, li) % li
                 if i < 5 or i > len(ls) - 5:
-                    logging.info(
+                    logger.info(
                         f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
                     )
 
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls

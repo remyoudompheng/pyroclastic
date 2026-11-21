@@ -34,13 +34,13 @@ import os
 import pathlib
 import random
 import time
-from multiprocessing import Pool, Semaphore, current_process
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Pool, Semaphore, current_process
 
+import flint
+import kp
 import numpy as np
 import numpy.typing as npt
-import kp
-import flint
 
 try:
     import pymqs
@@ -48,14 +48,16 @@ except ImportError:
     pymqs = None
 
 import pyroclastic_flint_extras as flint_extras
-from . import algebra
-from . import gpu
-from . import relations
+
+from . import algebra, gpu, relations
 
 BUCKET_INTERVAL = 8192
 SHARDS = 256
 
 DEBUG_TIMINGS = False
+
+
+logger = logging.getLogger("sieve")
 
 
 def smoothness_bias(D: int) -> float:
@@ -111,7 +113,7 @@ def make_a(
         raise ValueError("Cannot find proper A for target {target}")
     idx = min(i for i, p in enumerate(pbase) if p > t)
     base = pbase[max(2, idx - 20) : idx + 20]
-    logging.debug(f"Using {k} factors for A in {base[0]}..{base[-1]}")
+    logger.debug(f"Using {k} factors for A in {base[0]}..{base[-1]}")
     candidates: list[tuple[int]] = []
     batch_size = max(32, len(pbase) // 10)
     while len(candidates) < 2 * batch_size:
@@ -130,7 +132,7 @@ def make_a(
     res = sorted((abs(product(ps) - target), ps) for ps in sorted(set(candidates)))
     res = res[: len(res) // 2]
     quality = float(res[-1][0]) / float(target)
-    logging.debug(f"Prepared {len(res)} values of A, quality {100 * quality:.2f}%")
+    logger.debug(f"Prepared {len(res)} values of A, quality {100 * quality:.2f}%")
     return [_ps for _, _ps in res]
 
 
@@ -209,7 +211,7 @@ def build_relation(
     for _p, _e in cofacs:
         if not flint.fmpz(_p).is_probable_prime():
             return None
-        # logging.error(f"WARNING: uncaught small prime {_p}")
+        # logger.error(f"WARNING: uncaught small prime {_p}")
         row.extend(_e * [_p])
     return row
 
@@ -353,7 +355,7 @@ class Siever:
                 AVG_BUCKET_SIZE = (
                     SUBSEGMENT_SIZE * 0.055 * math.log2(primes[-1] / phuge)
                 )
-                logging.debug(
+                logger.debug(
                     f"Huge prime index {HUGE_PRIME} ({phuge}) bucket size %d expect usage %d",
                     BUCKET_SIZE,
                     int(AVG_BUCKET_SIZE),
@@ -371,7 +373,7 @@ class Siever:
         self.device_id = GPU_LOCK[self.gpu_idx][0]
         mgr = kp.Manager(self.device_id)
         gpu_name = mgr.get_device_properties().get("device_name", "unknown")
-        logging.info(f"Worker {proc.name} running on GPU {self.device_id} ({gpu_name})")
+        logger.info(f"Worker {proc.name} running on GPU {self.device_id} ({gpu_name})")
         xp = mgr.tensor_t(np.array(primes, dtype=np.uint32))
         xn = mgr.tensor_t(np.array(roots, dtype=np.uint32))
         nsumroots = (
@@ -403,7 +405,7 @@ class Siever:
         # Output buffer to receive full sieve results.
         xdebug = None
         if DEBUG:
-            logging.debug("sieve debug output enabled")
+            logger.debug("sieve debug output enabled")
             xdebug = mgr.tensor_t(
                 np.zeros(WORKCHUNK * ITERS * SEGMENT_SIZE // 4, dtype=np.uint32)
             )
@@ -413,7 +415,7 @@ class Siever:
         mem_huge_avg = int(mem_huge * AVG_BUCKET_SIZE / BUCKET_SIZE)
         mem = mem_main + mem_huge
 
-        logging.debug(
+        logger.debug(
             f"Memory usage {mem >> 10} kB (main {mem_main >> 10} kB, huge reserved {mem_huge >> 10} kB, huge used {mem_huge_avg >> 10} kB)"
         )
 
@@ -464,7 +466,7 @@ class Siever:
         D, B1, B2 = self.wargs["D"], self.wargs["B1"], self.wargs["B2"]
         A, Bi = make_poly(D, ak, self.roots_d)
         if A.bit_length() + 2 > BLEN * 32:
-            logging.error(f"Skipping A={A} (too large)")
+            logger.error(f"Skipping A={A} (too large)")
             return 1.0, 0, []
 
         dt = self._run(ak, A, Bi)
@@ -607,7 +609,7 @@ class Siever2:
                 AVG_BUCKET_SIZE = BUCKET_INTERVAL * (
                     math.log(math.log(primes[-1]) / math.log(phuge))
                 )
-                logging.debug(
+                logger.debug(
                     f"Huge prime index {HUGE_PRIME} ({phuge}) bucket size %d expect usage %d",
                     BUCKET_SIZE,
                     int(AVG_BUCKET_SIZE),
@@ -623,7 +625,7 @@ class Siever2:
             xxl_length = int(xxl_ratio * INTERVAL_SIZE * WORKCHUNK * 1.1)
             xxl_length = (xxl_length // 2048) * 2048
             xxl_size = 4 * xxl_length
-            logging.debug(
+            logger.debug(
                 f"XXL primes {len(primes) - XXL_PRIME} buffer size {xxl_size >> 20}MiB (hit rate {100 * xxl_ratio:.1f}%)"
             )
 
@@ -637,7 +639,7 @@ class Siever2:
         self.device_id = GPU_LOCK[self.gpu_idx][0]
         mgr = kp.Manager(self.device_id)
         gpu_name = mgr.get_device_properties().get("device_name", "unknown")
-        logging.info(f"Worker {proc.name} running on GPU {self.device_id} ({gpu_name})")
+        logger.info(f"Worker {proc.name} running on GPU {self.device_id} ({gpu_name})")
         xp = mgr.tensor_t(np.array(primes, dtype=np.uint32))
         xn = mgr.tensor_t(np.array(roots, dtype=np.uint32))
         assert AFACS >= 17 and AFACS & 1 == 1
@@ -660,7 +662,7 @@ class Siever2:
         # Output buffer to receive full sieve results.
         xdebug = None
         if DEBUG:
-            logging.debug("sieve debug output enabled")
+            logger.debug("sieve debug output enabled")
             xdebug = mgr.tensor_t(
                 np.zeros(WORKCHUNK * INTERVAL_SIZE // 4, dtype=np.uint32)
             )
@@ -702,7 +704,7 @@ class Siever2:
         mem_huge = 4 * (xfill.size() + xhuge.size())
         mem = mem_main + mem_huge
 
-        logging.debug(
+        logger.debug(
             f"Memory usage {mem >> 10} kB (main {mem_main >> 10} kB, huge {mem_huge >> 10} kB)"
         )
 
@@ -745,7 +747,7 @@ class Siever2:
         D, B1, B2 = self.wargs["D"], self.wargs["B1"], self.wargs["B2"]
         A, Bi = make_poly(D, ak, self.roots_d)
         if A.bit_length() + 2 > BLEN * 32:
-            logging.error(f"Skipping A={A} (too large)")
+            logger.error(f"Skipping A={A} (too large)")
             return 1.0, 0, []
 
         dt = self._run(ak, A, Bi)
@@ -764,7 +766,7 @@ class Siever2:
         A, ak, Bi = ABi
         nout = int(vout[0])
         if nout >= len(vout):
-            logging.error(f"output buffer too small {nout}/{len(vout)}")
+            logger.error(f"output buffer too small {nout}/{len(vout)}")
         futures = []
         for oidx in range(min(len(vout) - 1, nout)):
             v = int(vout[oidx + 1])
@@ -841,7 +843,7 @@ class Siever2:
             for t1, t2 in zip(stamps, stamps[1:]):
                 times.append((t2 - t1) * self.stampPeriod * 1e-9)
             timestr = " ".join(f"{1000 * dt:.2f}ms" for dt in times)
-            logging.debug(f"times {timestr}")
+            logger.debug(f"times {timestr}")
         dt = max(0.5, stamps[-1] - stamps[0]) * self.stampPeriod * 1e-9
         return dt
 
@@ -888,17 +890,13 @@ def main():
 
 
 def main_impl(args: argparse.Namespace):
-    logging.getLogger().setLevel(logging.INFO)
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
     while len(GPU_LOCK) < args.ngpu:
         GPU_LOCK.append((len(GPU_LOCK), Semaphore(1)))
 
     N = args.N
     D = -abs(N)
     bias = smoothness_bias(D)
-    logging.info(f"Sieve smoothness bias is {bias:.2f} bits")
+    logger.info(f"Sieve smoothness bias is {bias:.2f} bits")
     USE_SIEVER2 = args.siever2
     if not USE_SIEVER2:
         B1, B2k, OUTSTRIDE, EXTRA_THRESHOLD, AFACS, ITERS, POLYS_PER_WG = get_params(
@@ -930,16 +928,16 @@ def main_impl(args: argparse.Namespace):
         assert (k * k - D) % p == 0
         primes.append(p)
         roots.append(k)
-    logging.debug(
+    logger.debug(
         f"Prime base size {len(primes)} {primes[:10]} ... {primes[-1]}, B2={B2 / 1e6:.1f}M"
     )
-    logging.debug(f"Interval size {M // 512}k")
+    logger.debug(f"Interval size {M // 512}k")
 
     A0 = math.isqrt(abs(D)) // (2 * M)
     # Enforce at least 2 words, because A can grow for very small D.
     BLEN = max(2, (A0.bit_length() + 36) // 32)
     WORKCHUNK = 2 ** (AFACS - 1)
-    logging.debug(f"{AFACS} factors per A, {BLEN} words per coefficient")
+    logger.debug(f"{AFACS} factors per A, {BLEN} words per coefficient")
 
     results = []
     all_primes: set[int] = set()
@@ -1011,7 +1009,7 @@ def main_impl(args: argparse.Namespace):
                 cur_speed = (sieved - last_sieved) / (time.monotonic() - last_print)
                 last_sieved = sieved
                 last_print = time.monotonic()
-                print(
+                logger.info(
                     f"Chunk {nb} ({sieved / 1e6:.0f}M) done in {dt:.3f}s ({cur_speed / 1e9:.1f}G/s avg {avg_speed / 1e9:.1f}G/s) {len(rows)}/{nreports} items (relations={_nr} [{rel_speed:.3g}/s] primes={_np} excess={_nr - _np})"
                 )
 
@@ -1042,12 +1040,12 @@ def main_impl(args: argparse.Namespace):
     sieve_pool.close()
     avg_speed = sieved / (time.monotonic() - start_time)
     rel_speed = _nr / (time.monotonic() - start_time)
-    print(
+    logger.info(
         f"Sieved {nb} A ({sieved / 1e6:.0f}M) in {dt:.3f}s (avg {avg_speed / 1e9:.1f}G/s) (relations={_nr} [{rel_speed:.1f}/s] primes={_np} excess={_nr - _np})"
     )
 
     total_time = time.monotonic() - start_time
-    logging.info(
+    logger.info(
         f"Got {len(results)} relations with {len(all_primes)} primes in {total_time:.3f}s"
     )
 
@@ -1068,14 +1066,14 @@ def main_impl(args: argparse.Namespace):
                     q = q * ideal(-p) ** -1
             # q must be the unit form
             assert q.q()[0] == 1, (_row, q)
-        logging.info(f"Checked {len(results)} class group relations")
+        logger.info(f"Checked {len(results)} class group relations")
 
     if args.verbose:
         for _row in results[:16]:
-            print(_row)
-        print("...")
+            logger.debug(_row)
+        logger.debug("...")
         for _row in results[-16:]:
-            print(_row)
+            logger.debug(_row)
 
 
 def check():
@@ -1083,12 +1081,11 @@ def check():
     argp.add_argument("DATADIR")
     args = argp.parse_args()
 
-    logging.getLogger().setLevel(logging.INFO)
     datadir = pathlib.Path(args.DATADIR)
     with open(datadir / "args.json") as j:
         clsargs = json.load(j)
     D = clsargs["d"]
-    logging.info(f"D = {D}")
+    logger.info(f"D = {D}")
 
     forms = {}
 
@@ -1112,10 +1109,10 @@ def check():
             assert q.q()[0] == 1, (row, q)
             count += 1
     dt = time.monotonic() - t0
-    logging.info(f"Checked {count} relations in {dt:.3f}s")
+    logger.info(f"Checked {count} relations in {dt:.3f}s")
 
     if (datadir / "relations.filtered").is_file():
-        logging.info("Checking filtered relations")
+        logger.info("Checking filtered relations")
         t0 = time.monotonic()
         count = 0
         with open(datadir / "relations.filtered") as f:
@@ -1129,8 +1126,12 @@ def check():
                 assert q.q()[0] == 1, (row, q)
                 count += 1
         dt = time.monotonic() - t0
-        logging.info(f"Checked {count} relations in {dt:.3f}s")
+        logger.info(f"Checked {count} relations in {dt:.3f}s")
 
 
 if __name__ == "__main__":
+    import pyroclastic.logs
+
+    pyroclastic.logs.setup(logging.DEBUG)
+
     main()

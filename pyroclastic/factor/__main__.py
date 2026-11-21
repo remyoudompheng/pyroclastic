@@ -36,10 +36,10 @@ def main():
     if args.otlp:
         logs.setup_otlp()
 
-    logging.info(f"Running on device {gpu.device_name()}")
+    gpu.banner()
 
     if args.OUTDIR is None:
-        logging.info("Creating temporary directory for results")
+        logging.getLogger("main").info("Creating temporary directory for results")
         with tempfile.TemporaryDirectory(prefix="pyroclastic") as tmpdir:
             args.OUTDIR = tmpdir
             args.DATADIR = args.OUTDIR

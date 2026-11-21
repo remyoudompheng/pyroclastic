@@ -1,8 +1,13 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-FileCopyrightText: 2025-2026 Rémy O
+
 import logging
 import pathlib
 import time
 
 from networkx import Graph, connected_components
+
+logger = logging.getLogger("filter")
 
 
 def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None = None):
@@ -23,7 +28,7 @@ def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None 
                 if p in pseen:
                     pseen2.add(p)
                 pseen.add(p)
-        logging.info(f"[prune] {len(pseen)} primes appear in {len(rawrels)} relations")
+        logger.info(f"[prune] {len(pseen)} primes appear in {len(rawrels)} relations")
         excess = len(rawrels) - len(pseen)
         pseen.difference_update(pseen2)
         del pseen2
@@ -33,7 +38,7 @@ def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None 
             if any(abs(p) in pseen for p in rel):
                 continue
             rawrels_.append(rel)
-        logging.info(
+        logger.info(
             f"[prune] pruned {len(rawrels) - len(rawrels_)} relations with singletons"
         )
         stop = len(rawrels_) > 0.6 * len(rawrels)
@@ -69,7 +74,7 @@ def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None 
                 stats[p] = None
 
     excess = len(rels) - len(stats) - pbase
-    logging.info(f"[prune] {len(stats) + pbase} primes appear in relations")
+    logger.info(f"[prune] {len(stats) + pbase} primes appear in relations")
 
     def prune(ridx):
         r = rels[ridx]
@@ -102,10 +107,10 @@ def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None 
                 prune(stats[p][0])
                 singles += 1
         if singles:
-            logging.info(f"[prune] pruned {singles} singletons")
+            logger.info(f"[prune] pruned {singles} singletons")
             nr = sum(1 for r in rels if r is not None)
             excess = nr - len(stats) - pbase
-            logging.info(f"[prune] {len(stats) + pbase} primes appear in relations")
+            logger.info(f"[prune] {len(stats) + pbase} primes appear in relations")
         else:
             break
 
@@ -119,7 +124,7 @@ def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None 
                 prune(stats[p][0])
                 singles += 1
         if singles:
-            logging.info(f"[prune] pruned {singles} singletons")
+            logger.info(f"[prune] pruned {singles} singletons")
 
         m2 = [p for p, rs in stats.items() if rs is not None and len(rs) == 2]
         g = Graph()
@@ -136,7 +141,7 @@ def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None 
             cliques_removed = []
         size = sum(len(c) for c in cliques_removed)
         if size:
-            logging.info(
+            logger.info(
                 f"[prune] pruning {len(cliques_removed)} cliques of {size} relations"
             )
         for c in cliques_removed:
@@ -153,7 +158,7 @@ def step_prune(rawrels: list, B1: int, pbase: int, datadir: pathlib.Path | None 
     rels = [r for r in rels if r is not None]
     for r in rels:
         cols.update(r)
-    logging.info(
+    logger.info(
         f"[prune] After pruning: {len(rels)} relations with {len(cols) + pbase} primes"
     )
 
@@ -220,8 +225,8 @@ def step_filter(rels, datadir: pathlib.Path | None):
         return out
 
     excess = len(rels) - len(stats)
-    logging.info(f"{len(stats)} primes appear in relations")
-    logging.info(f"{excess} relations can be removed")
+    logger.info(f"{len(stats)} primes appear in relations")
+    logger.info(f"{excess} relations can be removed")
 
     # prime p = product(l^e)
     saved_pivots = []
@@ -237,7 +242,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
         maxe = max(abs(e) for r in remaining for _, e in r.items())
         nc, nr = len(stats), len(remaining)
         assert nr > nc
-        logging.info(
+        logger.info(
             f"Starting {d}-merge: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={time.time() - t:.1f}s"
         )
 
@@ -253,7 +258,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
             md = [k for k in stats if len(stats[k]) <= d]
             if not md:
                 break
-            logging.debug(f"{len(md)} {d}-merges candidates {min(md)}..{max(md)}")
+            logger.debug(f"{len(md)} {d}-merges candidates {min(md)}..{max(md)}")
             merged = 0
             for p in md:
                 rs = stats.get(p)
@@ -266,7 +271,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
                 pividx = rs[0]
                 piv = rels[pividx]
                 if abs(piv[p]) > 1:
-                    logging.debug(f"skip pivoting on {p}")
+                    logger.debug(f"skip pivoting on {p}")
                     continue
                 for ridx in rs[1:]:
                     rp = pivot(piv, rels[ridx], p)
@@ -286,7 +291,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
 
             if not merged:
                 break
-            logging.debug(f"{merged} pivots done")
+            logger.debug(f"{merged} pivots done")
 
         remaining = [_r for _r in rels if _r is not None]
         nr, nc = len(remaining), len(stats)
@@ -316,7 +321,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
                 ]
                 scores.sort()
                 worst = scores[-to_remove:]
-                print(
+                logger.info(
                     f"Worst rows ({len(worst)}) have score {worst[0][0]:.3f}..{worst[-1][0]:.3f}"
                 )
                 for _, ridx in worst:
@@ -328,7 +333,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
     # We ignore dense columns when scoring
     nr = len([_r for _r in rels if _r is not None])
     dense = set([p for p, _rels in stats.items() if len(_rels) > nr // 3])
-    logging.debug(f"Ignoring {len(dense)} dense columns to eliminate worst rows")
+    logger.debug(f"Ignoring {len(dense)} dense columns to eliminate worst rows")
 
     def score_final(r):
         return sum(abs(e) for p, e in r.items() if p not in dense)
@@ -345,7 +350,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
             rels[ridx] = None
         dedup.add(line)
     if duplicates:
-        logging.warn(f"Found {duplicates} duplicate relations after filtering")
+        logger.warn(f"Found {duplicates} duplicate relations after filtering")
 
     if excess > MIN_EXCESS:
         # scores = [(len(r), ridx) for ridx, r in enumerate(rels) if r is not None]
@@ -355,7 +360,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
         scores.sort()
         to_remove = excess - MIN_EXCESS
         worst = scores[-to_remove:]
-        print(
+        logger.info(
             f"Worst rows ({len(worst)}) have score {worst[0][0]:.3f}..{worst[-1][0]:.3f}"
         )
         for _, ridx in worst:
@@ -369,7 +374,7 @@ def step_filter(rels, datadir: pathlib.Path | None):
     avgw1 = sum(abs(e) for r in remaining for _, e in r.items()) / len(remaining)
     maxe = max(abs(e) for r in rels for e in r.values())
     dt = time.time() - t0
-    logging.info(
+    logger.info(
         f"Final: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} weight1={avgw1:.3f} maxcoef={maxe} elapsed={dt:.1f}s"
     )
 
@@ -380,33 +385,34 @@ def step_filter(rels, datadir: pathlib.Path | None):
                 line = f"{p} = " + " ".join(f"{l}^{e}" for l, e in sorted(rel.items()))
                 w.write(line)
                 w.write("\n")
-            logging.info(f"{len(saved_pivots)} removed relations written to {w.name}")
+            logger.info(f"{len(saved_pivots)} removed relations written to {w.name}")
 
         with open(datadir / "relations.filtered", "w") as w:
             for r in rels:
                 line = " ".join(f"{l}^{e}" for l, e in sorted(r.items()))
                 w.write(line)
                 w.write("\n")
-            logging.info(f"{len(rels)} relations written to {w.name}")
+            logger.info(f"{len(rels)} relations written to {w.name}")
 
     return rels
 
 
 def main():
     import argparse
-    import os
+
+    import pyroclastic.logs
 
     p = argparse.ArgumentParser()
     p.add_argument("DATADIR")
     args = p.parse_args()
 
-    logging.getLogger().setLevel(logging.DEBUG)
+    pyroclastic.logs.setup(logging.DEBUG)
 
-    with open(os.path.join(args.DATADIR, "relations.sieve")) as f:
+    with open(pathlib.Path(args.DATADIR) / "relations.sieve") as f:
         rels = []
         for l in f:
             rels.append([int(x) for x in l.split()])
-        logging.info(f"Imported {len(rels)} relations")
+        logger.info(f"Imported {len(rels)} relations")
         pruned, _ = step_prune(rels, 0, 0, pathlib.Path(args.DATADIR))
         del rels
         step_filter(pruned, pathlib.Path(args.DATADIR))

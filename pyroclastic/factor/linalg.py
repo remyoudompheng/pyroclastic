@@ -45,6 +45,8 @@ logger = logging.getLogger("linalg")
 
 
 def main():
+    import pyroclastic.logs
+
     p = argparse.ArgumentParser()
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--bench", action="store_true")
@@ -52,9 +54,7 @@ def main():
     p.add_argument("DATADIR")
     args = p.parse_args()
 
-    logging.getLogger().setLevel(logging.INFO)
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    pyroclastic.logs.setup(logging.DEBUG if args.verbose else logging.INFO)
 
     main_impl(args)
 
@@ -69,14 +69,14 @@ def main_impl(args):
     with open(datadir / "args.json") as j:
         clsargs = json.load(j)
     N = clsargs["n"]
-    logging.info(f"N = {N}")
+    logger.info(f"N = {N}")
 
     if (datadir / "relations.filtered").is_file():
         with open(datadir / "relations.filtered") as f:
             for l in f:
                 rel = [int(x) for x in l.split()]
                 rels.append((rel[0], rel[1:]))
-        logging.info(f"Imported {len(rels)} relations")
+        logger.info(f"Imported {len(rels)} relations")
         filtered = rels
     else:
         t0 = time.monotonic()
@@ -89,7 +89,7 @@ def main_impl(args):
                 rel = np.array(words[1:], dtype=np.int32)
                 rels.append((r0, rel))
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Imported {len(rels)} relations (before prune/filter) in {dt:.3f}s"
         )
         pruned = relations.prune_gf2(N, rels, pathlib.Path(args.DATADIR))
@@ -98,7 +98,7 @@ def main_impl(args):
     if DEBUG_CHECKRELS:
         for x, ys in rels + filtered:
             assert (x * x) % N == algebra.product(ys) % N
-        logging.info(f"Checked {len(rels)} relations")
+        logger.info(f"Checked {len(rels)} relations")
 
     if args.bench:
         bench(filtered)
@@ -139,7 +139,7 @@ def main_impl(args):
 
     for f in factors:
         if not flint.fmpz(f).is_probable_prime():
-            logging.info(f"Factor {f} is composite")
+            logger.info(f"Factor {f} is composite")
         print(f)
 
 
@@ -393,7 +393,7 @@ class SpMV:
         for i in range(m):
             w0[i, i // 32] = 1 << (i % 32)
         poly1 = [poly[len(poly) - i - 1] for i in range(len(poly))]
-        logging.debug(f"Linear generator has degree {len(poly) - 1}")
+        logger.debug(f"Linear generator has degree {len(poly) - 1}")
 
         kers = []
         seen = set()

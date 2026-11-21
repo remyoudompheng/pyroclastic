@@ -41,6 +41,8 @@ import pyroclastic_flint_extras as flint_extras
 
 DEBUG_NO_SORT_ROWS = False
 
+logger = logging.getLogger("linalg")
+
 
 def to_sparse_matrix(rels, square=True):
     """
@@ -67,14 +69,14 @@ def to_sparse_matrix(rels, square=True):
     assert len(dense_p) % 4 == 0
 
     dense_weight = sum(stats[p] for p in dense_p) / float(len(rels))
-    logging.debug(f"Dense columns for {len(dense_p)} primes {dense_p}")
-    logging.info(
+    logger.debug(f"Dense columns for {len(dense_p)} primes {dense_p}")
+    logger.info(
         f"Dense block has {len(dense_p)} columns, average weight {dense_weight:.1f} per row"
     )
     sparse_weight = sum(
         sum(abs(e) for p, e in r.items() if p not in dense_p) for r in rels
     ) / float(len(rels))
-    logging.info(f"Sparse block has avg weight {sparse_weight:.1f} per row")
+    logger.info(f"Sparse block has avg weight {sparse_weight:.1f} per row")
     norm_plus = max(sum(abs(e) for p, e in r.items() if e > 0) for r in rels)
     norm_minus = max(sum(abs(e) for p, e in r.items() if e < 0) for r in rels)
 
@@ -105,7 +107,7 @@ def to_sparse_matrix(rels, square=True):
     for i, r in enumerate(rels):
         dense[i, :] = [r.get(p, 0) for p in dense_p]
     dense_norm = max(np.sum(np.abs(dense[i, :])) for i in range(len(rels)))
-    logging.info(f"Dense block has max row norm {dense_norm}")
+    logger.info(f"Dense block has max row norm {dense_norm}")
 
     primes = dense_p + sorted(p for p in stats if p not in dense_set)
     if square:
@@ -208,7 +210,7 @@ class CSRMatrix:
         self.tensors = [xd, xrows, xidx]
         self.flops = 2 * dim * dense_n + sparsesize
         self.weight = weight
-        logging.debug(
+        logger.debug(
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight:.1f})"
         )
 
@@ -273,7 +275,7 @@ class CSRMatrix:
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.debug(
+        logger.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -298,7 +300,7 @@ class CSRMatrix:
         speed = ITERS * MODULI / gpu_dt
         dt = time.monotonic() - t0
 
-        logging.info(
+        logger.info(
             f"Krylov completed in {dt:.3}s (GPU {gpu_dt:.3f}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
 
@@ -406,7 +408,7 @@ class CSRMatrix:
 
         mat_size = 4 * (xd.size() + xrows.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.debug(
+        logger.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -446,12 +448,12 @@ class CSRMatrix:
                 assert len(poly) == dim + 1, len(poly)
                 det = -poly[0] * pow(poly[dim], -1, li) % li
                 if i < 5 or i > len(ls) - 5:
-                    logging.info(
+                    logger.info(
                         f"Check Wiedemann modulo {li} OK: det(M % {li}) = {det}"
                     )
 
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Wiedemann completed in {dt:.3}s (GPU {gpu_dt:.3}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return dets, ls
@@ -545,9 +547,7 @@ class BlockCOO:
             block_idx.append(len(sparses))
         assert len(sparses) == sum(len(l) for l in plus + minus)
         assert len(block_idx) == 1 + (dim + BM - 1) // BM
-        logging.debug(
-            f"Block sizes {[j - i for i, j in zip(block_idx, block_idx[1:])]}"
-        )
+        logger.debug(f"Block sizes {[j - i for i, j in zip(block_idx, block_idx[1:])]}")
         # print("Deltas")
         # print("plus ", max(j - i for i, j in zip(aplus, aplus[16:])))
         # print("minus", max(j - i for i, j in zip(aminus, aminus[16:])))
@@ -559,7 +559,7 @@ class BlockCOO:
         self.tensors = [xd, xsparse, xidx]
         self.flops = 2 * dim * dense_n + len(sparses)
         self.weight = weight
-        logging.debug(
+        logger.debug(
             f"{self.flops} FLOPS per matrix multiplication (original weight {weight})"
         )
 
@@ -693,7 +693,7 @@ class BlockCOO:
 
         mat_size = 4 * (xd.size() + xsparse.size() + xidx.size())
         vec_size = 4 * xv.size()
-        logging.debug(
+        logger.debug(
             f"Buffer sizes: matrix {mat_size >> 10}kB vectors {vec_size >> 10}kB"
         )
 
@@ -719,7 +719,7 @@ class BlockCOO:
         speed = ITERS * MODULI / gpu_dt
 
         dt = time.monotonic() - t0
-        logging.info(
+        logger.info(
             f"Krylov completed in {dt:.3f}s (GPU {gpu_dt:.3f}s, {flops / 1e9:.2f} GFLOPS, {speed:.1f} SpMV/s)"
         )
         return {
@@ -787,7 +787,7 @@ def detz(subrels, threads, cputhreads: int | None, logfile=None):
 
     if gpu.has_fast_add64():
         # Use 64-bit moduli (2.3x larger) when possible
-        logging.info(f"Using 64-bit arithmetic on {gpu.device_name()}")
+        logger.info(f"Using 64-bit arithmetic on {gpu.device_name()}")
         BATCH_SIZE //= 2
         max_mod = (2**63) // norm
     else:
@@ -797,7 +797,7 @@ def detz(subrels, threads, cputhreads: int | None, logfile=None):
     moduli = [
         x for x in range(max_mod - 100 * dim, max_mod) if flint.fmpz(x).is_prime()
     ]
-    logging.debug(f"Prepared {len(moduli)} small prime moduli for determinant")
+    logger.debug(f"Prepared {len(moduli)} small prime moduli for determinant")
 
     margs = (dense, plus, minus, basis, weight)
     detmod, mod = 0, 1
@@ -805,7 +805,7 @@ def detz(subrels, threads, cputhreads: int | None, logfile=None):
     # Create new locks for each pool
     for i in range(len(GPU_LOCK)):
         GPU_LOCK[i] = Semaphore(1)
-    logging.info(f"Expected Krylov sequence length {dim + dim // BLOCKM + 1}")
+    logger.info(f"Expected Krylov sequence length {dim + dim // BLOCKM + 1}")
     with Pool(threads, initializer=worker_init, initargs=margs) as mat_pool:
         with ProcessPoolExecutor(max_workers=cputhreads) as lingen_pool:
             for krys in mat_pool.imap_unordered(
@@ -825,7 +825,7 @@ def detz(subrels, threads, cputhreads: int | None, logfile=None):
                 for l, ljob in jobs:
                     pol = ljob.result()
                     if len(pol) != dim + 1:
-                        logging.error(f"Failed determinant for modulus {l}")
+                        logger.error(f"Failed determinant for modulus {l}")
                         continue
                     # Ignore (-1)^dim sign
                     dets.append(pol[0])
@@ -837,14 +837,16 @@ def detz(subrels, threads, cputhreads: int | None, logfile=None):
                 detmod, mod = update_crt(detmod, mod, dets, mods)
                 dt = time.monotonic() - t0
                 done += len(mods)
-                logging.info(f"Computed determinants for {done} moduli in {dt:.3f}s")
+                logger.info(f"Computed determinants for {done} moduli in {dt:.3f}s")
                 if detmod.bit_length() + 128 < mod.bit_length():
-                    logging.info(f"Found determinant (size {detmod.bit_length()} bits)")
+                    logger.info(f"Found determinant (size {detmod.bit_length()} bits)")
                     return detmod
 
 
 def main():
     import argparse
+
+    import pyroclastic.logs
 
     p = argparse.ArgumentParser()
     p.add_argument("-v", "--verbose", action="store_true")
@@ -873,10 +875,7 @@ def main():
     p.add_argument("DATADIR")
     args = p.parse_args()
 
-    logging.getLogger().setLevel(logging.INFO)
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
+    pyroclastic.logs.setup(logging.DEBUG if args.verbose else logging.INFO)
     main_impl(args)
 
 
@@ -897,7 +896,7 @@ def main_impl(args):
     with open(datadir / "args.json") as j:
         clsargs = json.load(j)
     D = clsargs["d"]
-    logging.info(f"D = {D}")
+    logger.info(f"D = {D}")
 
     if (datadir / "relations.filtered").is_file():
         with open(datadir / "relations.filtered") as f:
@@ -907,14 +906,14 @@ def main_impl(args):
                     {int(p): int(e) for p, _, e in (f.partition("^") for f in facs)}
                 )
 
-        logging.info(f"Imported {len(rels)} relations")
+        logger.info(f"Imported {len(rels)} relations")
 
     else:
         with open(datadir / "relations.sieve") as f:
             for l in f:
                 rels.append([int(x) for x in l.split()])
 
-        logging.info(f"Imported {len(rels)} relations (before prune/filter)")
+        logger.info(f"Imported {len(rels)} relations (before prune/filter)")
         pruned, _ = relations.step_prune(rels, 0, 0, pathlib.Path(args.DATADIR))
         filtered = relations.step_filter(pruned, pathlib.Path(args.DATADIR))
         rels = filtered
@@ -928,7 +927,7 @@ def main_impl(args):
 
     # Compute at precision 0.01-0.001
     h_app = algebra.h_approx(D, 100 * max(100, D.bit_length()) ** 2)
-    logging.info(f"Using approximate class number {h_app}")
+    logger.info(f"Using approximate class number {h_app}")
 
     bigdets = []
     d = 0
@@ -936,24 +935,24 @@ def main_impl(args):
     while d == 0 or d > 10000 * h_app:
         mat_idx += 1
         w = open(datadir / f"determinant.{mat_idx}", "w", buffering=1)
-        logging.info(f"Selecting new square submatrix (dim {dim})")
+        logger.info(f"Selecting new square submatrix (dim {dim})")
         while True:
             subrels_idx = random.sample(range(len(rels)), dim)
             subrels = [rels[idx] for idx in subrels_idx]
             if len(basis1) == len(set(p for r in subrels for p, e in r.items() if e)):
                 removed = set(range(len(rels))) - set(subrels_idx)
-                logging.info(f"Square submatrix has removed rows {sorted(removed)}")
+                logger.info(f"Square submatrix has removed rows {sorted(removed)}")
                 print(f"submatrix {sorted(removed)}", file=w)
                 break
 
         detM = detz(subrels, threads=args.j, cputhreads=args.ncpu, logfile=w)
         if detM == 0:
-            logging.error("Matrix has zero determinant, trying again")
+            logger.error("Matrix has zero determinant, trying again")
             continue
         bigdets.append(detM)
         d = int(flint.fmpz(d).gcd(flint.fmpz(detM)))
         if len(bigdets) > 1:
-            logging.info(f"Multiple of group order {d}")
+            logger.info(f"Multiple of group order {d}")
 
     k1 = max(1, int(math.floor(d / h_app * 0.95)) - 10)
     k2 = int(math.ceil(d / h_app * 1.05)) + 10
@@ -966,14 +965,14 @@ def main_impl(args):
             # If the group is not cyclic, multiple values can pass this check.
             ok = algebra.is_probable_class_number(D, h)
             if ok:
-                logging.info(f"Found probable class number {h=}")
+                logger.info(f"Found probable class number {h=}")
                 if abs(h / h_app - 1.0) < best[0]:
                     best = abs(h / h_app - 1.0), h
             else:
-                logging.debug(f"Rejected candidate h={h}")
+                logger.debug(f"Rejected candidate h={h}")
 
     h = best[1]
-    logging.info(f"Found class number {h=}")
+    logger.info(f"Found class number {h=}")
     with open(datadir / "classnumber", "w") as f:
         print(h, file=f)
 
@@ -999,7 +998,7 @@ def bench(rels, check=False):
     max_mod32 = (2**31) // norm
     max_mod64 = (2**63) // norm
     modratio = math.log2(max_mod64) / math.log2(max_mod32)
-    logging.info(
+    logger.info(
         f"Matrix has norm {norm} max modulus32 {max_mod32} max64 {max_mod64} ratio {modratio:.2f}"
     )
 
@@ -1033,67 +1032,67 @@ def bench(rels, check=False):
                 if lidx < 5 or lidx > len(ls) - 5:
                     pol = lingen.generating_polynomial_multi(seqs, M.dim, l)
                     det = -pol[0] if M.dim & 1 == 1 else pol[0]
-                    logging.info(
+                    logger.info(
                         f"Check Wiedemann modulo {l} OK: det(M % {l}) = {det % l}"
                     )
 
     Mat = SpMV(dense, plus, minus, basis, weight)
-    logging.info("Running with 1 modulus (naive kernel)")
+    logger.info("Running with 1 modulus (naive kernel)")
     Mat.wiedemann(moduli[0], check=CHECK, bench=BENCH)
-    logging.info("Running with 16 moduli (naive kernel)")
+    logger.info("Running with 16 moduli (naive kernel)")
     wiedemann_multi(Mat, moduli[:16], bench=BENCH)
-    logging.info("Running with 32 moduli (naive kernel)")
+    logger.info("Running with 32 moduli (naive kernel)")
     wiedemann_multi(Mat, moduli[:32], bench=BENCH)
-    logging.info("Running with 64 moduli (naive kernel)")
+    logger.info("Running with 64 moduli (naive kernel)")
     wiedemann_multi(Mat, moduli[:64], bench=BENCH)
-    logging.info("Running with 128 moduli (naive kernel)")
+    logger.info("Running with 128 moduli (naive kernel)")
     wiedemann_multi(Mat, moduli[:128], bench=BENCH)
 
-    logging.info("Running with 32 moduli64 (naive kernel)")
+    logger.info("Running with 32 moduli64 (naive kernel)")
     wiedemann_multi(Mat, moduli64[:32], bench=BENCH)
-    logging.info("Running with 64 moduli64 (naive kernel)")
+    logger.info("Running with 64 moduli64 (naive kernel)")
     wiedemann_multi(Mat, moduli64[:64], bench=BENCH)
 
     if dim < 32768:
         # indices must fit int16
         Mat1 = CSRMatrix(dense, plus, minus, basis, weight)
         if dim < gpu.max_shmem() // 4:
-            logging.info("Running with 16 moduli (small)")
+            logger.info("Running with 16 moduli (small)")
             wiedemann_multi(Mat1, moduli[:16], bench=BENCH)
-            logging.info("Running with 64 moduli (small)")
+            logger.info("Running with 64 moduli (small)")
             wiedemann_multi(Mat1, moduli[:64], bench=BENCH)
-            logging.info("Running with 128 moduli (small)")
+            logger.info("Running with 128 moduli (small)")
             wiedemann_multi(Mat1, moduli[:128], bench=BENCH)
 
         # FIXME: broken?
-        # logging.info("Running with 16 moduli (medium)")
+        # logger.info("Running with 16 moduli (medium)")
         # Mat1.wiedemann_medium(moduli[:16], check=False)
-        # logging.info("Running with 64 moduli (medium)")
+        # logger.info("Running with 64 moduli (medium)")
         # Mat1.wiedemann_medium(moduli[:64], check=False)
 
     if dim < gpu.max_shmem() // 8:
-        logging.info("Running with 16 moduli64 (small)")
+        logger.info("Running with 16 moduli64 (small)")
         wiedemann_multi(Mat1, moduli64[:16], bench=BENCH)
-        logging.info("Running with 64 moduli64 (small)")
+        logger.info("Running with 64 moduli64 (small)")
         wiedemann_multi(Mat1, moduli64[:64], bench=BENCH)
-        logging.info("Running with 128 moduli64 (small)")
+        logger.info("Running with 128 moduli64 (small)")
         wiedemann_multi(Mat1, moduli64[:128], bench=BENCH)
 
     Mat2 = BlockCOO(dense, plus, minus, basis, weight)
-    logging.info("Running BlockCOO v3 with 1 moduli")
+    logger.info("Running BlockCOO v3 with 1 moduli")
     wiedemann_multi(Mat2, moduli[:1], bench=BENCH)
-    logging.info("Running BlockCOO v3 with 8 moduli")
+    logger.info("Running BlockCOO v3 with 8 moduli")
     wiedemann_multi(Mat2, moduli[:8], bench=BENCH)
-    logging.info("Running BlockCOO v3 with 16 moduli")
+    logger.info("Running BlockCOO v3 with 16 moduli")
     wiedemann_multi(Mat2, moduli[:16], bench=BENCH)
-    logging.info("Running BlockCOO v3 with 32 moduli")
+    logger.info("Running BlockCOO v3 with 32 moduli")
     wiedemann_multi(Mat2, moduli[:32], bench=BENCH)
 
-    logging.info("Running BlockCOO v3 with 1 moduli64")
+    logger.info("Running BlockCOO v3 with 1 moduli64")
     wiedemann_multi(Mat2, moduli64[:1], bench=BENCH)
-    logging.info("Running BlockCOO v3 with 8 moduli64")
+    logger.info("Running BlockCOO v3 with 8 moduli64")
     wiedemann_multi(Mat2, moduli64[:8], bench=BENCH)
-    logging.info("Running BlockCOO v3 with 16 moduli64")
+    logger.info("Running BlockCOO v3 with 16 moduli64")
     wiedemann_multi(Mat2, moduli64[:16], bench=BENCH)
 
 

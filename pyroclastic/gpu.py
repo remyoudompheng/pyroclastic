@@ -1,8 +1,13 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-FileCopyrightText: 2025-2026 Rémy O
+
 import importlib
 import json
 import logging
 import os
 import subprocess
+
+logger = logging.getLogger("gpu")
 
 
 def compile(src, defines, entry="main"):
@@ -16,7 +21,7 @@ def compile(src, defines, entry="main"):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
         )
-        logging.debug(f"Exec {' '.join(p.args)}")
+        logger.debug(f"Exec {' '.join(p.args)}")
         out, err = p.communicate(timeout=1)
     if p.returncode:
         raise EnvironmentError(f"shader compilation failed: code {p.returncode}")
@@ -33,7 +38,7 @@ class GPUInfo:
         self.loaded = True
         try:
             self.vulkaninfo()
-            logging.info("Loaded information from vulkaninfo")
+            logger.info("Loaded information from vulkaninfo")
         except Exception:
             pass
 
@@ -52,6 +57,13 @@ class GPUInfo:
 
 
 _gpuinfo = GPUInfo()
+
+
+def banner():
+    _gpuinfo.load()
+    logger.info(
+        f"Running on device {_gpuinfo.devname} (shared memory {_gpuinfo.max_shmem >> 10}kB)"
+    )
 
 
 def device_name() -> str:

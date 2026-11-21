@@ -17,6 +17,8 @@ RelFac = tuple[int, list[int]]
 
 DEBUG_CHECK_RELFAC = False
 
+logger = logging.getLogger("filter")
+
 
 def prune_gf2(
     n: int, rawrels: list[RelFac], datadir: pathlib.Path | None = None
@@ -48,7 +50,7 @@ def prune_gf2(
             assert x * x % n == algebra.product(rel2) % n
         rels.append((x, numpy.array(rel2, dtype=numpy.int32)))
     if duplicates:
-        logging.warn(f"Found {duplicates} duplicate relations before pruning")
+        logger.warn(f"Found {duplicates} duplicate relations before pruning")
 
     # Prune relations in place: a removed relation is replaced by None.
     # We are only interested in coefficients ±1, exponent sign is ignored
@@ -66,7 +68,7 @@ def prune_gf2(
                 stats[p] = None
 
     excess = len(rels) - len(stats)
-    logging.info(f"[prune] {len(stats)} primes appear in relations")
+    logger.info(f"[prune] {len(stats)} primes appear in relations")
 
     def prune(ridx):
         r = rels[ridx]
@@ -100,10 +102,10 @@ def prune_gf2(
                 prune(stats_p[0])
                 singles += 1
         if singles:
-            logging.info(f"[prune] pruned {singles} singletons")
+            logger.info(f"[prune] pruned {singles} singletons")
             nr = sum(1 for r in rels if r is not None)
             excess = nr - len(stats)
-            logging.info(f"[prune] {len(stats)} primes appear in relations")
+            logger.info(f"[prune] {len(stats)} primes appear in relations")
         else:
             break
 
@@ -117,7 +119,7 @@ def prune_gf2(
                 prune(stats_p[0])
                 singles += 1
         if singles:
-            logging.info(f"[prune] pruned {singles} singletons")
+            logger.info(f"[prune] pruned {singles} singletons")
 
         g = Graph()
         for p, rs in stats.items():
@@ -134,7 +136,7 @@ def prune_gf2(
             cliques_removed = []
         size = sum(len(c) for c in cliques_removed)
         if size:
-            logging.info(
+            logger.info(
                 f"[prune] pruning {len(cliques_removed)} cliques of {size} relations"
             )
         for c in cliques_removed:
@@ -150,7 +152,7 @@ def prune_gf2(
     pruned: list[tuple[int, npt.NDArray]] = [r for r in rels if r is not None]
     for rx, rps in pruned:
         cols.update([_p for _p in rps])
-    logging.info(
+    logger.info(
         f"[prune] After pruning: {len(pruned)} relations with {len(cols)} primes"
     )
 
@@ -195,8 +197,8 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
         return len(row[1])
 
     excess = len(rels) - len(stats)
-    logging.info(f"{len(stats)} primes appear in relations")
-    logging.info(f"{excess} relations can be removed")
+    logger.info(f"{len(stats)} primes appear in relations")
+    logger.info(f"{excess} relations can be removed")
 
     # prime p = product(l^e)
 
@@ -209,7 +211,7 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
         avgw = sum(weight(r) for r in remaining) / len(remaining)
         nc, nr = len(stats), len(remaining)
         assert nr > nc
-        logging.info(
+        logger.info(
             f"Starting {d}-merge: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} elapsed={time.time() - t:.1f}s"
         )
 
@@ -225,7 +227,7 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
             md = [k for k in stats if len(stats[k]) <= d]
             if not md:
                 break
-            logging.debug(f"{len(md)} {d}-merges candidates {min(md)}..{max(md)}")
+            logger.debug(f"{len(md)} {d}-merges candidates {min(md)}..{max(md)}")
             merged = 0
             for p in md:
                 rs = stats.get(p)
@@ -252,7 +254,7 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
 
             if not merged:
                 break
-            logging.debug(f"{merged} pivots done")
+            logger.debug(f"{merged} pivots done")
 
         remaining = [_r for _r in rels if _r is not None]
         nr, nc = len(remaining), len(stats)
@@ -280,7 +282,7 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
                     scores.append((score_sparse(r, stats), ridx))
                 scores.sort()
                 worst = scores[-to_remove:]
-                logging.debug(
+                logger.debug(
                     f"Worst rows ({len(worst)}) have score {worst[0][0]:.3f}..{worst[-1][0]:.3f}"
                 )
                 for _, ridx in worst:
@@ -292,7 +294,7 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
     # We ignore dense columns when scoring
     nr = len([_r for _r in rels if _r is not None])
     dense = set([p for p, _rels in stats.items() if len(_rels) > nr // 3])
-    logging.debug(f"Ignoring {len(dense)} dense columns to eliminate worst rows")
+    logger.debug(f"Ignoring {len(dense)} dense columns to eliminate worst rows")
 
     def score_final(r):
         return sum(1 for p in r[1] if p not in dense)
@@ -308,7 +310,7 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
             rels[ridx] = None
         dedup.add(r[0])
     if duplicates:
-        logging.warn(f"Found {duplicates} duplicate relations after filtering")
+        logger.warn(f"Found {duplicates} duplicate relations after filtering")
 
     excess -= duplicates
     if excess > MIN_EXCESS:
@@ -319,7 +321,7 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
         scores.sort()
         to_remove = excess - MIN_EXCESS
         worst = scores[-to_remove:]
-        logging.info(
+        logger.info(
             f"Worst rows ({len(worst)}) have score {worst[0][0]:.3f}..{worst[-1][0]:.3f}"
         )
         for _, ridx in worst:
@@ -331,7 +333,7 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
     nr, nc = len(rels), len(stats)
     avgw = sum(len(r) for rx, r in rels) / len(rels)
     dt = time.time() - t0
-    logging.info(
+    logger.info(
         f"Final: {nc} columns {nr} rows excess={nr - nc} weight={avgw:.3f} elapsed={dt:.1f}s"
     )
 
@@ -343,6 +345,6 @@ def filter_gf2(N: int, rels, datadir: pathlib.Path | None):
                 line = " ".join(str(l) for l in sorted(r))
                 w.write(f"{rx} {line}")
                 w.write("\n")
-            logging.info(f"{len(rels)} relations written to {w.name}")
+            logger.info(f"{len(rels)} relations written to {w.name}")
 
     return rels
