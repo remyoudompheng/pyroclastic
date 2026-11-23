@@ -32,6 +32,9 @@ def main():
     linalg_args.add_argument(
         "--blockm", type=int, default=2, help="Block size for Block Wiedemann"
     )
+    linalg_args.add_argument(
+        "--skip-structure", action="store_true", help="Don't compute group structure"
+    )
 
     argp.add_argument(
         "-j",
@@ -72,7 +75,8 @@ def main():
 def main_impl(args):
     sieve.main_impl(args)
     linalg.main_impl(args)
-    groupstruct.main_impl(args)
+    if not args.skip_structure:
+        groupstruct.main_impl(args)
 
 
 if __name__ == "__main__":
